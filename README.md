@@ -19,7 +19,7 @@ Card-worthiness is mechanical: "does this content fit a shape within the field b
 
 ## Status
 
-Pre-implementation. See [`docs/design.md`](docs/design.md) (coming in [#3](https://github.com/Great-Sarak/anki-translator/issues/3)) for the full architecture, decisions log, and open items.
+Pre-implementation. See [`docs/design.md`](docs/design.md) for the full architecture, decisions log, and open items.
 
 Track progress on the [Anki Skill Stack — Full Coverage](https://github.com/orgs/Great-Sarak/projects/5) project board.
 
