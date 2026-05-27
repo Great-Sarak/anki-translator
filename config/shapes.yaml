@@ -1,0 +1,48 @@
+# shapes.yaml — note-type → semantic shape mapping for anki-translator.
+#
+# Maps an Anki note-type name (as it appears in your collection) to the
+# semantic shape the translator should treat it as, the role each field
+# plays, and the hard cutoffs that decide card-vs-overflow routing.
+#
+# Note-type names here MUST exist in the deck. Use `anki-manager list-models`
+# to see what's available; `anki-translator bootstrap` creates the AT-prefixed
+# starter set below if missing.
+
+"AT Basic":
+  shape: term-def
+  fields:
+    front: Front
+    back: Back
+    source: Source
+    position: Position
+  cutoffs:
+    back_max_chars: 200
+
+"AT Cloze":
+  shape: cloze
+  fields:
+    text: Text
+    source: Source
+    position: Position
+  cutoffs:
+    deletion_max_words: 5
+
+"AT List":
+  shape: term-list
+  fields:
+    front: Front
+    back: Back
+    source: Source
+    position: Position
+  cutoffs:
+    list_max_items: 7
+
+"AT Steps":
+  shape: term-steps
+  fields:
+    front: Front
+    back: Back
+    source: Source
+    position: Position
+  cutoffs:
+    steps_max: 5
