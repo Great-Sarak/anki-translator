@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.mypy_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Runtime state — directories tracked via .gitkeep, contents ignored
+queue/*
+!queue/.gitkeep
+!queue/committed/
+queue/committed/*
+!queue/committed/.gitkeep
+qa/*
+!qa/.gitkeep
+ledger/*
+!ledger/.gitkeep

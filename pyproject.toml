@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anki-translator"
+version = "0.1.0"
+description = "Document → Anki flashcards translator with human review queue"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+# anki-manager is a sibling Great-Sarak package; install it editable from a
+# local checkout (see README) until it's published to a registry.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov"]
+
+[project.scripts]
+anki-translator = "anki_translator.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anki_translator"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
