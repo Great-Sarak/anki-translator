@@ -9,7 +9,7 @@ Rules:
 - Pick exactly one shape from the list above by its exact note-type name, OR pick "overflow" if no shape fits within its budget.
 - Field values must be derived from the passage. Do not invent or pad.
 - Keep field values as terse as possible — flashcards work best when one fact lives on one card.
-- For cloze shapes: deletions go in {{c1::word}} {{c2::other word}} form. Cloze deletions should be the key concepts to memorize.
+- For cloze shapes: deletions go in {{{{c1::word}}}} {{{{c2::other word}}}} form — double braces on each side, every deletion. Cloze deletions should be the key concepts to memorize.
 - Source and Position fields will be filled by the caller, not by you. Do not output them.
 
 Respond with JSON only. No prose, no markdown fence, no commentary.

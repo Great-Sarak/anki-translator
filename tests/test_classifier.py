@@ -214,6 +214,15 @@ def test_build_prompt_includes_cutoffs(shapes: dict, chunk: Chunk) -> None:
     assert "deletion_max_words=5" in prompt
 
 
+def test_build_prompt_shows_canonical_cloze_braces_to_llm(shapes: dict, chunk: Chunk) -> None:
+    """The rendered prompt must show `{{c1::word}}` (double braces) to the LLM —
+    Python's .format() collapses `{{` → `{`, so the template needs four braces
+    per side. If we regress to two, the LLM copies single-brace clozes."""
+    prompt = build_prompt(chunk, shapes)
+    assert "{{c1::word}}" in prompt
+    assert "{c1::word}" not in prompt.replace("{{c1::word}}", "")
+
+
 def test_build_prompt_uses_canonical_field_names_only(shapes: dict, chunk: Chunk) -> None:
     """Prompt must surface the model's canonical field name (e.g. 'Back'), not the
     lowercase role ('back'), so the LLM doesn't mirror the wrong casing in its JSON."""
@@ -301,6 +310,18 @@ def test_classify_leaves_well_formed_cloze_alone(shapes: dict, chunk: Chunk) -> 
     result = classify(chunk, shapes, llm=_stub(raw))
     assert isinstance(result, CardCandidate)
     assert result.fields["Text"] == "{{c1::Mitochondria}} produces {{c2::ATP}}."
+
+
+def test_classify_normalizes_single_brace_on_both_ends(shapes: dict, chunk: Chunk) -> None:
+    """Observed after the prompt-escape fix: LLM emits `{c1::...}` with single
+    braces on BOTH ends. Normalizer must repair to `{{c1::...}}`."""
+    raw = json.dumps({
+        "choice": "AT Cloze",
+        "fields": {"Text": "Mitochondria divide by {c1::budding}."},
+    })
+    result = classify(chunk, shapes, llm=_stub(raw))
+    assert isinstance(result, CardCandidate)
+    assert result.fields["Text"] == "Mitochondria divide by {{c1::budding}}."
 
 
 def test_classify_normalizes_mixed_malformed_and_correct_clozes(shapes: dict, chunk: Chunk) -> None:

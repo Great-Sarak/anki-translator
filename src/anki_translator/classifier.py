@@ -271,18 +271,25 @@ def _check_cutoffs(fields: dict[str, object], shape_cfg: ShapeConfig) -> str | N
 
 _CLOZE_SINGLE_OPEN_RE = re.compile(r"(?<!\{)\{(c\d+::[^{}]*?)\}\}")
 _CLOZE_SINGLE_CLOSE_RE = re.compile(r"\{\{(c\d+::[^{}]*?)\}(?!\})")
+_CLOZE_SINGLE_BOTH_RE = re.compile(r"(?<!\{)\{(c\d+::[^{}]*?)\}(?!\})")
 
 
 def _normalize_cloze_braces(text: str) -> str:
-    """Repair `{cN::...}}` (single open) and `{{cN::...}` (single close) to `{{cN::...}}`.
+    """Repair malformed cloze deletion markers to canonical `{{cN::...}}`.
 
-    Observed empirically on Claude haiku-4-5: the first cloze deletion in a Text
-    field sometimes drops one brace at one end. Subsequent deletions in the same
-    text are usually correctly formed. We fix in-place so downstream consumers
-    (cutoff check, Anki) see a well-formed Text field.
+    Three observed shapes from Claude haiku-4-5, all on the first deletion:
+      - `{cN::...}}`  (single open)
+      - `{{cN::...}`  (single close)
+      - `{cN::...}`   (single on both ends) — kicked in after we hardened the
+        prompt's example; the model still copies whatever brace count it sees
+        on the first deletion and self-corrects from `c2` on.
+
+    Order matters: run single-both LAST so the asymmetric patterns above (which
+    contain a single `{` or `}`) aren't snagged by it first.
     """
     text = _CLOZE_SINGLE_OPEN_RE.sub(r"{{\1}}", text)
     text = _CLOZE_SINGLE_CLOSE_RE.sub(r"{{\1}}", text)
+    text = _CLOZE_SINGLE_BOTH_RE.sub(r"{{\1}}", text)
     return text
 
 
