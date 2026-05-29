@@ -1,4 +1,4 @@
-"""Queue file producer + (later) consumer.
+"""Queue file producer + consumer.
 
 The producer (write_queue) takes the output of the classifier+tagger pipeline and writes
 two markdown files per ingestion:
@@ -7,19 +7,31 @@ two markdown files per ingestion:
   Presence-equals-approved: user deletes blocks they don't want; the rest are committed.
 - qa/<date>-<slug>.md — Overflow chunks as standalone reference material. Different
   lifecycle from queue — qa files are kept permanently, queue files are committed/archived.
+
+The consumer (parse_queue + commit_queue) reads a reviewed queue file, calls anki-manager
+to create/update notes for surviving blocks, and archives the queue file to prevent
+double-commits.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from .classifier import CardCandidate, Overflow
 
+if TYPE_CHECKING:
+    from anki_manager import AnkiManager
+
 MAX_SLUG_LEN = 80
+CARD_HEADER_RE = re.compile(r"^##\s+Card\s+\d+\s+—\s+(.+?)\s*$")
+FIELD_LINE_RE = re.compile(r"^\*\*([^:]+):\*\*\s*(.*)$")
+META_FIELDS = {"Deck", "Model", "Tags"}
+CITATION_FIELDS = {"Source", "Position"}
 
 
 @dataclass(frozen=True)
@@ -143,3 +155,144 @@ def _render_qa(overflow: list[Overflow], *, slug: str, ingestion_date: date) -> 
             + f"\n\n_Reason: {ov.reason}_\n\n{c.text.strip()}\n"
         )
     return "\n".join(sections)
+
+
+# ---- consumer side ----
+
+
+class QueueParseError(Exception):
+    """Raised when a queue file is malformed beyond what we can sensibly recover from."""
+
+
+@dataclass(frozen=True)
+class ParsedBlock:
+    """One block parsed from a queue file. Round-trips with what write_queue serialized."""
+    shape: str
+    fields: dict[str, str]   # everything except Deck/Model/Tags
+    deck: str
+    model: str
+    tags: list[str]
+
+
+@dataclass
+class CommitResult:
+    created: list[str] = field(default_factory=list)        # stable_guids of new notes
+    updated: list[str] = field(default_factory=list)        # stable_guids of existing notes whose fields changed
+    failed: list[tuple[int, str]] = field(default_factory=list)  # (block_index, error message)
+    archived_to: Path | None = None
+
+
+def parse_queue(path: Path | str) -> list[ParsedBlock]:
+    """Parse a reviewed queue file into ParsedBlocks.
+
+    Splits on `\\n---\\n`. Blocks that are entirely whitespace are skipped. A block that is
+    present but missing its `## Card N — <shape>` header raises QueueParseError — that's
+    an editor mistake worth surfacing loudly rather than silently dropping.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise QueueParseError(f"queue file not found: {p}")
+    body = p.read_text(encoding="utf-8")
+    raw_blocks = body.split("\n---\n")
+    parsed: list[ParsedBlock] = []
+    for i, raw in enumerate(raw_blocks):
+        raw = raw.strip()
+        if not raw:
+            continue
+        # The "empty queue" sentinel file (written by write_queue when there are no candidates)
+        # starts with "# Queue (empty)" — skip it cleanly.
+        if raw.startswith("# Queue"):
+            continue
+        try:
+            parsed.append(_parse_one_block(raw))
+        except QueueParseError as e:
+            raise QueueParseError(f"block {i + 1} in {p}: {e}") from e
+    return parsed
+
+
+def _parse_one_block(raw: str) -> ParsedBlock:
+    lines = raw.splitlines()
+    header = lines[0] if lines else ""
+    m = CARD_HEADER_RE.match(header)
+    if not m:
+        raise QueueParseError(f"missing '## Card N — <shape>' header (got: {header!r})")
+    shape = m.group(1)
+
+    fields: dict[str, str] = {}
+    deck: str | None = None
+    model: str | None = None
+    tags: list[str] = []
+
+    for line in lines[1:]:
+        line = line.rstrip()
+        if not line:
+            continue
+        fm = FIELD_LINE_RE.match(line)
+        if not fm:
+            continue  # tolerate stray lines (user notes between fields, etc.)
+        name, value = fm.group(1).strip(), fm.group(2).strip()
+        if name == "Deck":
+            deck = value
+        elif name == "Model":
+            model = value
+        elif name == "Tags":
+            tags = [t.strip() for t in value.split(",") if t.strip()]
+        else:
+            fields[name] = value
+
+    if deck is None:
+        raise QueueParseError("missing **Deck:** line")
+    if model is None:
+        raise QueueParseError("missing **Model:** line")
+    if not fields:
+        raise QueueParseError("block has no content fields (Front/Back/Text/...)")
+
+    return ParsedBlock(shape=shape, fields=fields, deck=deck, model=model, tags=tags)
+
+
+def commit_queue(
+    path: Path | str,
+    mgr: "AnkiManager",
+    *,
+    dry_run: bool = False,
+    archive_dir: Path | str | None = None,
+) -> CommitResult:
+    """Parse a queue file, call mgr.upsert_note for each block, then archive.
+
+    dry_run=True: validate + call mgr in dry-run mode but do not archive the file.
+    archive_dir defaults to <queue_dir>/committed/.
+
+    On success the file is moved to archive_dir to prevent double-commits. On failure
+    (any block fails) the file stays in place so the user can fix and retry; the dups are
+    safe to retry because upsert_note is idempotent by stable_guid.
+    """
+    p = Path(path)
+    blocks = parse_queue(p)
+    result = CommitResult()
+
+    for i, block in enumerate(blocks, start=1):
+        try:
+            # Citation fields are part of the note fields; mgr's live schema validation
+            # will catch any field-name mismatch with the user's note type.
+            upsert = mgr.upsert_note(
+                deck=block.deck,
+                model=block.model,
+                fields=block.fields,
+                tags=block.tags or None,
+                dry_run=dry_run,
+            )
+            if upsert.created:
+                result.created.append(upsert.stable_guid)
+            else:
+                result.updated.append(upsert.stable_guid)
+        except Exception as e:  # noqa: BLE001 — surface per-block, keep going
+            result.failed.append((i, f"{type(e).__name__}: {e}"))
+
+    if not dry_run and not result.failed:
+        archive = Path(archive_dir) if archive_dir else (p.parent / "committed")
+        archive.mkdir(parents=True, exist_ok=True)
+        target = archive / p.name
+        p.rename(target)
+        result.archived_to = target
+
+    return result
