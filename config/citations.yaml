@@ -1,0 +1,45 @@
+# citations.yaml — per-source-type conventions for populating the Source and
+# Position fields on every Anki note.
+#
+# Source MUST NOT be empty on any note (cards without verifiable origin become
+# useless within months). Position is freeform per source type and may be
+# empty when location is unknown or doesn't apply.
+#
+# Templates use Python str.format-style placeholders. The metadata dict
+# provided by each extractor must contain every key listed in
+# source_required (and position_required if position is to be populated).
+
+url:
+  description: "Web page URL"
+  source_template: "{url}"
+  position_template: "{anchor}"
+  source_required: ["url"]
+  position_required: []   # anchor optional; falls back to empty
+
+doi:
+  description: "Journal article identified by DOI"
+  source_template: "{doi}"
+  position_template: "{section}"
+  source_required: ["doi"]
+  position_required: []   # section optional
+
+pdf:
+  description: "PDF file (filename is the canonical source; ledger keeps a hash for rename recovery)"
+  source_template: "{filename}"
+  position_template: "page {page}"
+  source_required: ["filename"]
+  position_required: ["page"]
+
+book:
+  description: "Book reference (title + edition disambiguates pagination)"
+  source_template: "{title}, {edition}"
+  position_template: "ch. {chapter}, p. {page}"
+  source_required: ["title", "edition"]
+  position_required: []   # chapter/page filled when available
+
+manual:
+  description: "Chat paste, hand-written notes, transcript — anything without a stable external identifier"
+  source_template: "{label}"
+  position_template: ""    # always empty for manual sources
+  source_required: ["label"]
+  position_required: []

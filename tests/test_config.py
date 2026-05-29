@@ -1,4 +1,4 @@
-"""Tests for config.load_shapes."""
+"""Tests for config loaders (shapes + citations)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from anki_translator.config import ConfigError, ShapeConfig, load_shapes
+from anki_translator.config import (
+    CitationConvention,
+    ConfigError,
+    ShapeConfig,
+    load_citations,
+    load_shapes,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -87,3 +93,71 @@ def test_cutoffs_default_empty(tmp_path: Path) -> None:
     shapes = load_shapes(p)
     assert shapes["Minimal"].cutoffs == {}
     assert isinstance(shapes["Minimal"], ShapeConfig)
+
+
+# ---- citations ----
+
+
+def test_load_starter_citations() -> None:
+    """The shipped config/citations.yaml loads cleanly and contains all five source types."""
+    citations = load_citations(REPO_ROOT / "config" / "citations.yaml")
+    assert set(citations.keys()) == {"url", "doi", "pdf", "book", "manual"}
+    assert citations["url"].source_template == "{url}"
+    assert citations["pdf"].position_template == "page {page}"
+    assert citations["manual"].position_template == ""
+    assert citations["book"].source_required == ["title", "edition"]
+    assert isinstance(citations["url"], CitationConvention)
+
+
+def test_citations_missing_source_type(tmp_path: Path) -> None:
+    p = tmp_path / "partial.yaml"
+    p.write_text(
+        "url:\n"
+        "  description: web\n"
+        "  source_template: '{url}'\n"
+        "  source_required: ['url']\n"
+    )
+    with pytest.raises(ConfigError, match="missing required source types"):
+        load_citations(p)
+
+
+def test_citations_unknown_source_type(tmp_path: Path) -> None:
+    p = tmp_path / "extra.yaml"
+    body = (REPO_ROOT / "config" / "citations.yaml").read_text()
+    body += (
+        "\n"
+        "podcast:\n"
+        "  description: audio\n"
+        "  source_template: '{episode}'\n"
+        "  source_required: ['episode']\n"
+    )
+    p.write_text(body)
+    with pytest.raises(ConfigError, match="unknown source types"):
+        load_citations(p)
+
+
+def test_citations_rejects_extra_keys(tmp_path: Path) -> None:
+    body = (REPO_ROOT / "config" / "citations.yaml").read_text()
+    body = body.replace(
+        '  description: "Web page URL"',
+        '  description: "Web page URL"\n  unknown_field: oops',
+    )
+    p = tmp_path / "bad.yaml"
+    p.write_text(body)
+    with pytest.raises(ConfigError, match="schema validation"):
+        load_citations(p)
+
+
+def test_citations_missing_required_template(tmp_path: Path) -> None:
+    body = (REPO_ROOT / "config" / "citations.yaml").read_text()
+    # Strip the source_template line from the url entry to trigger schema failure
+    body = body.replace('  source_template: "{url}"\n', "")
+    p = tmp_path / "bad.yaml"
+    p.write_text(body)
+    with pytest.raises(ConfigError, match="schema validation"):
+        load_citations(p)
+
+
+def test_load_citations_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="not found"):
+        load_citations(tmp_path / "nope.yaml")
