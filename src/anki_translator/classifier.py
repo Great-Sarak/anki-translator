@@ -13,15 +13,37 @@ classifier never trusts the LLM's self-report on budget compliance.
 from __future__ import annotations
 
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Union
+from typing import Callable, Iterable, Union
 
 from .chunk import Chunk
 from .config import ShapeConfig
 
 DEFAULT_MODEL = "anthropic/claude-haiku-4-5"
+DEFAULT_CONCURRENCY = 8
+"""Default fan-out width for classify_chunks/tag_candidates.
+
+The default subprocess dispatcher pays ~7s of openclaw CLI bootstrap per call,
+but those bootstraps parallelize cleanly. Spike 001 measured a ~5x throughput
+win at 8 workers vs sequential, with diminishing/negative returns past ~10.
+"""
 PROMPT_PATH = Path(__file__).parent / "prompts" / "classify.txt"
+
+
+def resolve_concurrency() -> int:
+    """Effective fan-out width: env override if set+positive, else DEFAULT_CONCURRENCY."""
+    raw = os.environ.get("ANKI_TRANSLATOR_CONCURRENCY")
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return DEFAULT_CONCURRENCY
 
 LLMCall = Callable[[str], str]
 """Type for the LLM dispatch function. Takes a prompt, returns the raw text response."""
@@ -77,7 +99,6 @@ def build_prompt(chunk: Chunk, shapes: dict[str, ShapeConfig]) -> str:
 def _default_llm(prompt: str, model: str | None = None) -> str:
     """Default LLM dispatcher — delegates to openclaw infer model run via the gateway."""
     import json
-    import os
     import re
     import subprocess
 
@@ -146,6 +167,28 @@ def classify(
         fields={k: str(v) for k, v in fields.items()},
         chunk=chunk,
     )
+
+
+def classify_chunks(
+    chunks: Iterable[Chunk],
+    shapes: dict[str, ShapeConfig],
+    llm: LLMCall | None = None,
+    max_workers: int | None = None,
+) -> list[Classification]:
+    """Classify many chunks in parallel, preserving input order.
+
+    The default subprocess dispatcher has high per-call overhead but parallelizes well —
+    see spikes/001-gateway-direct-llm. With a single-thread `llm` (or `max_workers=1`),
+    behavior is identical to calling `classify()` in a loop.
+    """
+    chunks_list = list(chunks)
+    if not chunks_list:
+        return []
+    workers = max_workers if max_workers is not None else resolve_concurrency()
+    if workers <= 1:
+        return [classify(chunk, shapes, llm=llm) for chunk in chunks_list]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(lambda c: classify(c, shapes, llm=llm), chunks_list))
 
 
 def _check_cutoffs(fields: dict[str, object], shape_cfg: ShapeConfig) -> str | None:

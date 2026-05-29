@@ -10,6 +10,7 @@ It is **not** part of the unit test suite and is **not** runnable in CI without 
 - AnkiConnect is reachable from the host shell.
 - The invoking user is in the `kryshanti-anki-users` group.
 - `openclaw` is on `PATH` and a model auth profile is configured for the default `anthropic/claude-haiku-4-5` (or whatever `ANKI_TRANSLATOR_MODEL` overrides to). Verify with `openclaw infer model run --json --prompt "ping" --model anthropic/claude-haiku-4-5`.
+- Classifier and tagger fan out chunk calls in parallel (default: 8 workers). Tune with `ANKI_TRANSLATOR_CONCURRENCY=<n>` if your gateway/account throttles aggressively or if you want sequential debug runs (`ANKI_TRANSLATOR_CONCURRENCY=1`). Background: each `openclaw infer model run` invocation has fixed ~7s of CLI bootstrap overhead, but invocations parallelize cleanly up to ~10 workers (see `spikes/001-gateway-direct-llm/`).
 - `Myrzka::Testing` is allowed in `/var/lib/kryshanti-anki/allowlist.toml` (or the Myrzka section has the `<new>` capability flag — it does by default).
 - A fresh checkout: `pip install -e ../anki-manager_main && pip install -e .`
 

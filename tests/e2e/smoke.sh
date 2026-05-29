@@ -10,9 +10,11 @@
 #     openclaw infer model run --json --prompt ping --model anthropic/claude-haiku-4-5
 #
 # Optional env:
-#   ANKI_TRANSLATOR_MODEL — override the default model (anthropic/claude-haiku-4-5)
-#   ANKI_TRANSLATOR_URL   — defaults to Wikipedia Mitochondrion article
-#   ANKI_TEST_DECK        — defaults to Myrzka::Testing
+#   ANKI_TRANSLATOR_MODEL       — override the default model (anthropic/claude-haiku-4-5)
+#   ANKI_TRANSLATOR_CONCURRENCY — classifier/tagger fan-out width (default 8;
+#                                 set 1 for sequential debug runs)
+#   ANKI_TRANSLATOR_URL         — defaults to Wikipedia Mitochondrion article
+#   ANKI_TEST_DECK              — defaults to Myrzka::Testing
 
 set -euo pipefail
 

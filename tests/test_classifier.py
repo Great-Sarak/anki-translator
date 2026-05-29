@@ -13,7 +13,7 @@ from typing import Callable
 import pytest
 
 from anki_translator.chunk import Chunk
-from anki_translator.classifier import CardCandidate, Overflow, build_prompt, classify
+from anki_translator.classifier import CardCandidate, Overflow, build_prompt, classify, classify_chunks
 from anki_translator.config import load_shapes
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -204,3 +204,39 @@ def test_build_prompt_includes_cutoffs(shapes: dict, chunk: Chunk) -> None:
     prompt = build_prompt(chunk, shapes)
     assert "back_max_chars=200" in prompt
     assert "deletion_max_words=5" in prompt
+
+
+# ---- batch / parallel ----
+
+
+def test_classify_chunks_preserves_order_with_concurrency(shapes: dict) -> None:
+    """Order of returned classifications must match input order, even when parallel."""
+    chunks = [
+        Chunk(text=f"chunk {i}", source="s", position="", source_type="manual", metadata={})
+        for i in range(20)
+    ]
+    # Stub returns a Front field encoding the chunk index, so we can detect reordering.
+    def stub(prompt: str) -> str:
+        # Pull the chunk number out of the rendered prompt.
+        for line in prompt.splitlines():
+            if line.startswith("chunk "):
+                idx = line.split()[1]
+                return json.dumps({"choice": "AT Basic", "fields": {"Front": f"front-{idx}", "Back": "b"}})
+        raise AssertionError("test stub didn't find chunk marker in prompt")
+
+    results = classify_chunks(chunks, shapes, llm=stub, max_workers=8)
+    assert len(results) == 20
+    for i, result in enumerate(results):
+        assert isinstance(result, CardCandidate), f"chunk {i} should classify"
+        assert result.fields["Front"] == f"front-{i}", f"chunk {i} got out-of-order result"
+
+
+def test_classify_chunks_empty_input(shapes: dict) -> None:
+    assert classify_chunks([], shapes, llm=_stub("")) == []
+
+
+def test_classify_chunks_max_workers_one_matches_sequential(shapes: dict, chunk: Chunk) -> None:
+    stub = _stub(json.dumps({"choice": "AT Basic", "fields": {"Front": "f", "Back": "b"}}))
+    sequential = [classify(chunk, shapes, llm=stub) for _ in range(3)]
+    batched = classify_chunks([chunk] * 3, shapes, llm=stub, max_workers=1)
+    assert sequential == batched

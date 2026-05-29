@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
-from .classifier import CardCandidate, LLMCall, _default_llm
+from .classifier import CardCandidate, LLMCall, _default_llm, resolve_concurrency
 
 PROMPT_PATH = Path(__file__).parent / "prompts" / "tag.txt"
 MAX_DEPTH = 2  # cap at topic::subtopic — Anki's tag UI degrades beyond this
@@ -100,3 +101,31 @@ def generate_tags(
         if bt and bt not in result:
             result.append(bt)
     return result
+
+
+def tag_candidates(
+    candidates: Iterable[CardCandidate],
+    existing_tags: list[str],
+    batch_tag: str | None = None,
+    llm: LLMCall | None = None,
+    max_workers: int | None = None,
+) -> list[list[str]]:
+    """Generate tags for many candidates in parallel, preserving input order.
+
+    `existing_tags` is captured once and shared as the seed across calls — workers do
+    not see each other's tag suggestions. That's intentional: parallel tag generation
+    on a single batch shouldn't drift the vocabulary mid-flight.
+    """
+    candidates_list = list(candidates)
+    if not candidates_list:
+        return []
+    workers = max_workers if max_workers is not None else resolve_concurrency()
+    if workers <= 1:
+        return [generate_tags(c, existing_tags, batch_tag=batch_tag, llm=llm) for c in candidates_list]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(
+            pool.map(
+                lambda c: generate_tags(c, existing_tags, batch_tag=batch_tag, llm=llm),
+                candidates_list,
+            )
+        )
