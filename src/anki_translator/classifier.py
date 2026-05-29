@@ -20,7 +20,7 @@ from typing import Callable, Union
 from .chunk import Chunk
 from .config import ShapeConfig
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_MODEL = "anthropic/claude-haiku-4-5"
 PROMPT_PATH = Path(__file__).parent / "prompts" / "classify.txt"
 
 LLMCall = Callable[[str], str]
@@ -74,20 +74,26 @@ def build_prompt(chunk: Chunk, shapes: dict[str, ShapeConfig]) -> str:
     )
 
 
-def _default_llm(prompt: str, model: str = DEFAULT_MODEL) -> str:
-    """Default LLM dispatcher — uses the Anthropic SDK with the configured haiku model."""
-    import anthropic
+def _default_llm(prompt: str, model: str | None = None) -> str:
+    """Default LLM dispatcher — delegates to openclaw infer model run via the gateway."""
+    import json
+    import os
+    import re
+    import subprocess
 
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
-    resp = client.messages.create(
-        model=model,
-        max_tokens=1024,
-        temperature=0,
-        messages=[{"role": "user", "content": prompt}],
+    resolved_model = model or os.environ.get("ANKI_TRANSLATOR_MODEL", DEFAULT_MODEL)
+    result = subprocess.run(
+        ["openclaw", "infer", "model", "run", "--json", "--prompt", prompt, "--model", resolved_model],
+        capture_output=True,
+        text=True,
+        check=True,
     )
-    # Anthropic returns a list of content blocks; for plain prompts we expect one text block.
-    parts = [block.text for block in resp.content if getattr(block, "type", None) == "text"]
-    return "".join(parts)
+    data = json.loads(result.stdout)
+    text = data["outputs"][0]["text"]
+    # Strip markdown code fences that some models add despite prompt instructions.
+    if text.startswith("```"):
+        text = re.sub(r"^```[^\n]*\n?", "", text).rstrip().removesuffix("```").rstrip()
+    return text
 
 
 def classify(
