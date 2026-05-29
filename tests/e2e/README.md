@@ -9,7 +9,7 @@ It is **not** part of the unit test suite and is **not** runnable in CI without 
 - The `kryshanti-anki` systemd unit is running (`systemctl --user status kryshanti-anki` or `anki-manager status`).
 - AnkiConnect is reachable from the host shell.
 - The invoking user is in the `kryshanti-anki-users` group.
-- `ANTHROPIC_API_KEY` is set in the environment.
+- `openclaw` is on `PATH` and a model auth profile is configured for the default `anthropic/claude-haiku-4-5` (or whatever `ANKI_TRANSLATOR_MODEL` overrides to). Verify with `openclaw infer model run --json --prompt "ping" --model anthropic/claude-haiku-4-5`.
 - `Myrzka::Testing` is allowed in `/var/lib/kryshanti-anki/allowlist.toml` (or the Myrzka section has the `<new>` capability flag — it does by default).
 - A fresh checkout: `pip install -e ../anki-manager_main && pip install -e .`
 
@@ -115,4 +115,4 @@ If anything diverges from expected:
 
 ## Future automation
 
-The natural automation path is a pytest marker (`@pytest.mark.e2e`) that runs the same procedure with assertions, gated on `ANTHROPIC_API_KEY` being set and `anki-manager status` returning `ready=true`. Deferred until the v0.1 manual run has stabilized.
+The natural automation path is a pytest marker (`@pytest.mark.e2e`) that runs the same procedure with assertions, gated on `openclaw infer model run` succeeding for the target model and `anki-manager status` returning `ready=true`. Deferred until the v0.1 manual run has stabilized.
