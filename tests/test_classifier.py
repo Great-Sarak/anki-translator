@@ -13,7 +13,15 @@ from typing import Callable
 import pytest
 
 from anki_translator.chunk import Chunk
-from anki_translator.classifier import CardCandidate, Overflow, build_prompt, classify, classify_chunks
+from anki_translator.classifier import (
+    CardCandidate,
+    Overflow,
+    _default_concurrency,
+    build_prompt,
+    classify,
+    classify_chunks,
+    resolve_concurrency,
+)
 from anki_translator.config import load_shapes
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -378,3 +386,43 @@ def test_classify_chunks_max_workers_one_matches_sequential(shapes: dict, chunk:
     sequential = [classify(chunk, shapes, llm=stub) for _ in range(3)]
     batched = classify_chunks([chunk] * 3, shapes, llm=stub, max_workers=1)
     assert sequential == batched
+
+
+# ---- concurrency heuristic ----
+
+
+def test_default_concurrency_uses_cpu_minus_one_over_two(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("anki_translator.classifier.os.cpu_count", lambda: 20)
+    assert _default_concurrency() == 9  # (20-1)//2
+    monkeypatch.setattr("anki_translator.classifier.os.cpu_count", lambda: 8)
+    assert _default_concurrency() == 3  # (8-1)//2
+    monkeypatch.setattr("anki_translator.classifier.os.cpu_count", lambda: 2)
+    assert _default_concurrency() == 1  # floor at 1
+    monkeypatch.setattr("anki_translator.classifier.os.cpu_count", lambda: 1)
+    assert _default_concurrency() == 1  # single-core box still works
+
+
+def test_default_concurrency_handles_unknown_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Some sandboxes (containers without cpu_set) return None — fall back."""
+    monkeypatch.setattr("anki_translator.classifier.os.cpu_count", lambda: None)
+    assert _default_concurrency() == 4
+
+
+def test_resolve_concurrency_env_overrides_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANKI_TRANSLATOR_CONCURRENCY", "3")
+    monkeypatch.setattr("anki_translator.classifier.os.cpu_count", lambda: 64)  # would yield 31
+    assert resolve_concurrency() == 3
+
+
+def test_resolve_concurrency_ignores_invalid_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANKI_TRANSLATOR_CONCURRENCY", "not-a-number")
+    monkeypatch.setattr("anki_translator.classifier.os.cpu_count", lambda: 20)
+    assert resolve_concurrency() == 9  # falls through to CPU heuristic
+
+
+def test_resolve_concurrency_ignores_zero_or_negative_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANKI_TRANSLATOR_CONCURRENCY", "0")
+    monkeypatch.setattr("anki_translator.classifier.os.cpu_count", lambda: 20)
+    assert resolve_concurrency() == 9
+    monkeypatch.setenv("ANKI_TRANSLATOR_CONCURRENCY", "-1")
+    assert resolve_concurrency() == 9

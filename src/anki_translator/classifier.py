@@ -24,18 +24,28 @@ from .chunk import Chunk
 from .config import ShapeConfig
 
 DEFAULT_MODEL = "anthropic/claude-haiku-4-5"
-DEFAULT_CONCURRENCY = 8
-"""Default fan-out width for classify_chunks/tag_candidates.
-
-The default subprocess dispatcher pays ~7s of openclaw CLI bootstrap per call,
-but those bootstraps parallelize cleanly. Spike 001 measured a ~5x throughput
-win at 8 workers vs sequential, with diminishing/negative returns past ~10.
-"""
 PROMPT_PATH = Path(__file__).parent / "prompts" / "classify.txt"
 
 
+def _default_concurrency() -> int:
+    """Scale fan-out width to the host's CPU count.
+
+    Each openclaw CLI dispatch is CPU-heavy during Node bootstrap (Spike 001
+    saw ~100% core time per process), so the practical ceiling tracks core
+    count. Heuristic: (cpu_count - 1) // 2, floored at 1. On a 20-core host
+    that yields 9 workers, just below the empirically-measured saturation
+    knee at 10. On a 2-core host it backs off to 1.
+
+    Falls back to 4 if os.cpu_count() returns None (rare; some sandboxes).
+    """
+    cores = os.cpu_count()
+    if cores is None:
+        return 4
+    return max(1, (cores - 1) // 2)
+
+
 def resolve_concurrency() -> int:
-    """Effective fan-out width: env override if set+positive, else DEFAULT_CONCURRENCY."""
+    """Effective fan-out width: env override if set+positive, else CPU-scaled default."""
     raw = os.environ.get("ANKI_TRANSLATOR_CONCURRENCY")
     if raw:
         try:
@@ -44,7 +54,7 @@ def resolve_concurrency() -> int:
                 return value
         except ValueError:
             pass
-    return DEFAULT_CONCURRENCY
+    return _default_concurrency()
 
 LLMCall = Callable[[str], str]
 """Type for the LLM dispatch function. Takes a prompt, returns the raw text response."""

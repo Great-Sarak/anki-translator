@@ -68,7 +68,7 @@ The 5× win from concurrency lands today with trivial code. The further 5× from
 
 For PR #37 follow-up:
 
-1. **Do this now.** Wrap the per-chunk classifier/tagger calls in `concurrent.futures.ThreadPoolExecutor(max_workers=8)` in `classifier.classify_chunks` and `tagger.tag_candidates`. The dispatcher (`_default_llm`) doesn't have to change — the subprocess is thread-safe by construction. Expected wall time: ~7 min → ~80s on a typical article. ~10 lines of code.
+1. **Do this now.** Wrap the per-chunk classifier/tagger calls in `concurrent.futures.ThreadPoolExecutor` in `classifier.classify_chunks` and `tagger.tag_candidates`. The dispatcher (`_default_llm`) doesn't have to change — the subprocess is thread-safe by construction. Width scales with host CPU count (`(cpu_count - 1) // 2`, floored at 1) since each subprocess pegs a core during Node bootstrap; on the 20-core Yarrkha host that's 9 workers, just under the empirical saturation knee at 10. Expected wall time: ~7 min → ~80s on a typical article. ~10 lines of code.
 
 2. **Optional next step.** If 80s still hurts, batch 5–10 chunks per prompt and ask the model for a JSON array. Reduces call count proportionally with a modest hit to response stability (longer prompts, occasional malformed arrays to retry on). Easy to layer on top of (1).
 
