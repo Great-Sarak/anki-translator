@@ -1,0 +1,16 @@
+You generate Anki tags for a flashcard based on its content. Tags must follow these rules:
+
+1. Prefer tags from the existing tag vocabulary below. Only invent a new tag when no existing one fits.
+2. Tags are hierarchical with "::" as separator. Maximum depth is 2 levels (e.g. "biology::organelles"). Never go deeper.
+3. Produce 1 to 3 tags per card. Quality over quantity.
+4. Do NOT produce tags that duplicate the source name, source type, or ingestion date — those live in fields elsewhere.
+5. Tags must be lowercase, ASCII, and use hyphens not spaces. Examples: "biology", "biology::organelles", "distributed-systems::consensus".
+
+Existing tag vocabulary (use these when applicable):
+{existing_tags_block}
+
+Card content:
+Note type: {note_type}
+{fields_block}
+
+Respond with JSON only, no prose: {{"tags": ["tag1", "tag2::subtag"]}}
