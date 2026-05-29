@@ -13,7 +13,7 @@ import pytest
 
 from anki_translator.chunk import Chunk
 from anki_translator.classifier import CardCandidate
-from anki_translator.tagger import build_prompt, generate_tags
+from anki_translator.tagger import build_prompt, generate_tags, tag_candidates
 
 
 @pytest.fixture
@@ -143,3 +143,42 @@ def test_build_prompt_excludes_source_position(candidate: CardCandidate) -> None
     )
     prompt = build_prompt(candidate_with_source, existing_tags=[])
     assert "should-not-appear-as-tag-hint" not in prompt
+
+
+# ---- batch / parallel ----
+
+
+def test_tag_candidates_preserves_order_with_concurrency(candidate: CardCandidate) -> None:
+    """Each candidate gets its own tag list, returned in input order."""
+    candidates = []
+    for i in range(20):
+        c = CardCandidate(
+            note_type="AT Basic",
+            shape="term-def",
+            fields={"Front": f"front-{i}", "Back": "b"},
+            chunk=candidate.chunk,
+        )
+        candidates.append(c)
+
+    def stub(prompt: str) -> str:
+        # Reflect the per-candidate Front value back as the tag, so we can detect reordering.
+        for line in prompt.splitlines():
+            if line.startswith("Front:"):
+                front = line.split(":", 1)[1].strip()
+                return json.dumps({"tags": [f"echo::{front}"]})
+        raise AssertionError("stub didn't find Front: in prompt")
+
+    results = tag_candidates(candidates, existing_tags=[], llm=stub, max_workers=8)
+    assert len(results) == 20
+    for i, tags in enumerate(results):
+        assert tags == [f"echo::front-{i}"], f"candidate {i} got out-of-order tags: {tags}"
+
+
+def test_tag_candidates_empty_input() -> None:
+    assert tag_candidates([], existing_tags=[], llm=_stub("")) == []
+
+
+def test_tag_candidates_appends_batch_tag_to_each(candidate: CardCandidate) -> None:
+    stub = _stub(json.dumps({"tags": ["biology"]}))
+    results = tag_candidates([candidate, candidate], existing_tags=[], batch_tag="batch-x", llm=stub, max_workers=2)
+    assert results == [["biology", "batch-x"], ["biology", "batch-x"]]

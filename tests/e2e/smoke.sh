@@ -4,10 +4,17 @@
 # This automates steps 1, 2, 5, 7 (the script-able parts). Steps 3, 4, 6 are still
 # human-driven — they require eyeballing the queue file and verifying Anki state.
 #
-# Required env:
-#   ANTHROPIC_API_KEY    — for the LLM calls
-#   ANKI_TRANSLATOR_URL  — defaults to Wikipedia Mitochondrion article
-#   ANKI_TEST_DECK       — defaults to Myrzka::Testing
+# Required:
+#   openclaw on PATH with an auth profile for the target model. The default
+#   dispatcher shells out to `openclaw infer model run --json` — verify with:
+#     openclaw infer model run --json --prompt ping --model anthropic/claude-haiku-4-5
+#
+# Optional env:
+#   ANKI_TRANSLATOR_MODEL       — override the default model (anthropic/claude-haiku-4-5)
+#   ANKI_TRANSLATOR_CONCURRENCY — classifier/tagger fan-out width (default 8;
+#                                 set 1 for sequential debug runs)
+#   ANKI_TRANSLATOR_URL         — defaults to Wikipedia Mitochondrion article
+#   ANKI_TEST_DECK              — defaults to Myrzka::Testing
 
 set -euo pipefail
 

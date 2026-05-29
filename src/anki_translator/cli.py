@@ -83,28 +83,25 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         print("error: extractor produced no chunks", file=sys.stderr)
         return 2
 
-    # 2. Classify each chunk
+    # 2. Classify each chunk (fan out — see classifier.resolve_concurrency)
     shapes = load_shapes(args.shapes)
-    candidates = []
-    overflow = []
-    for chunk in chunks:
-        result = classifier.classify(chunk, shapes)
+    candidates: list[classifier.CardCandidate] = []
+    overflow: list[classifier.Overflow] = []
+    for result in classifier.classify_chunks(chunks, shapes):
         if isinstance(result, classifier.CardCandidate):
             candidates.append(result)
         else:
             overflow.append(result)
 
-    # 3. Tag each candidate
+    # 3. Tag each candidate (fan out — same width as classification)
     try:
         from anki_manager import AnkiManager
         existing_tags = list(AnkiManager().call("getTags") or [])
     except Exception:
         existing_tags = []  # tagger handles empty vocabulary gracefully
 
-    tagged = [
-        TaggedCandidate(c, tagger.generate_tags(c, existing_tags, batch_tag=args.tag))
-        for c in candidates
-    ]
+    tag_lists = tagger.tag_candidates(candidates, existing_tags, batch_tag=args.tag)
+    tagged = [TaggedCandidate(c, tags) for c, tags in zip(candidates, tag_lists)]
 
     # 4. Write queue + qa
     first_chunk = chunks[0]

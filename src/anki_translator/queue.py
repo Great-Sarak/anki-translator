@@ -270,7 +270,26 @@ def commit_queue(
     blocks = parse_queue(p)
     result = CommitResult()
 
+    # Ensure each referenced deck exists before the per-block upserts. mgr.add_deck
+    # is idempotent and respects the allowlist — if the agent has the <new>
+    # capability or a matching pattern (explicit or wildcard), the deck is
+    # created here. Surfaced per-block so the user sees a clear "deck X cannot
+    # be created" rather than an opaque "deck was not found" from AnkiConnect
+    # at addNote time. Skipped in dry_run since deck creation is a mutation.
+    deck_errors: dict[str, str] = {}
+    if not dry_run:
+        for deck in dict.fromkeys(b.deck for b in blocks):  # unique, preserves order
+            try:
+                mgr.add_deck(deck)
+            except Exception as e:  # noqa: BLE001 — propagate per-block below
+                deck_errors[deck] = f"{type(e).__name__}: {e}"
+
     for i, block in enumerate(blocks, start=1):
+        if block.deck in deck_errors:
+            result.failed.append(
+                (i, f"deck setup failed for {block.deck!r}: {deck_errors[block.deck]}")
+            )
+            continue
         try:
             # Citation fields are part of the note fields; mgr's live schema validation
             # will catch any field-name mismatch with the user's note type.
