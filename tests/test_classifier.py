@@ -260,6 +260,77 @@ def test_classify_canonicalization_enforces_cutoff_on_lowercase_back(shapes: dic
     assert "exceeds_budget" in result.reason
 
 
+# ---- cloze brace normalization ----
+
+
+def test_classify_normalizes_single_open_brace_on_cloze(shapes: dict, chunk: Chunk) -> None:
+    """LLM bug: first cloze deletion comes out as `{c1::...}}` (single open).
+    Classifier must repair to `{{c1::...}}` so Anki renders it as a cloze."""
+    raw = json.dumps({
+        "choice": "AT Cloze",
+        "fields": {"Text": "Mitochondria is {c1::the powerhouse}} of the cell."},
+    })
+    result = classify(chunk, shapes, llm=_stub(raw))
+    assert isinstance(result, CardCandidate)
+    assert result.fields["Text"] == "Mitochondria is {{c1::the powerhouse}} of the cell."
+
+
+def test_classify_normalizes_single_close_brace_on_cloze(shapes: dict, chunk: Chunk) -> None:
+    raw = json.dumps({
+        "choice": "AT Cloze",
+        "fields": {"Text": "Mitochondria is {{c1::the powerhouse} of the cell."},
+    })
+    result = classify(chunk, shapes, llm=_stub(raw))
+    assert isinstance(result, CardCandidate)
+    assert result.fields["Text"] == "Mitochondria is {{c1::the powerhouse}} of the cell."
+
+
+def test_classify_leaves_well_formed_cloze_alone(shapes: dict, chunk: Chunk) -> None:
+    raw = json.dumps({
+        "choice": "AT Cloze",
+        "fields": {"Text": "{{c1::Mitochondria}} produces {{c2::ATP}}."},
+    })
+    result = classify(chunk, shapes, llm=_stub(raw))
+    assert isinstance(result, CardCandidate)
+    assert result.fields["Text"] == "{{c1::Mitochondria}} produces {{c2::ATP}}."
+
+
+def test_classify_normalizes_mixed_malformed_and_correct_clozes(shapes: dict, chunk: Chunk) -> None:
+    """Observed in the smoke test: first deletion broken, later ones correct."""
+    raw = json.dumps({
+        "choice": "AT Cloze",
+        "fields": {"Text": "Evidence of {c1::recombination in mtDNA}}. Enzymes are {{c2::present}}."},
+    })
+    result = classify(chunk, shapes, llm=_stub(raw))
+    assert isinstance(result, CardCandidate)
+    assert result.fields["Text"] == "Evidence of {{c1::recombination in mtDNA}}. Enzymes are {{c2::present}}."
+
+
+def test_classify_does_not_touch_braces_on_non_cloze_shapes(shapes: dict, chunk: Chunk) -> None:
+    """Normalization is scoped to cloze shapes — a literal `{c1::...}` in an AT Basic
+    Back field is not a cloze; pass through untouched."""
+    raw = json.dumps({
+        "choice": "AT Basic",
+        "fields": {"Front": "syntax", "Back": "the {c1::pattern}} is literal here"},
+    })
+    result = classify(chunk, shapes, llm=_stub(raw))
+    assert isinstance(result, CardCandidate)
+    assert result.fields["Back"] == "the {c1::pattern}} is literal here"
+
+
+def test_classify_cloze_cutoff_runs_on_normalized_text(shapes: dict, chunk: Chunk) -> None:
+    """The deletion-words cutoff must see the normalized braces so it can count
+    deletion words — otherwise a broken `{c1::...}}` slips past the budget check."""
+    # 6 words > 5-word limit. Bracket is malformed; cutoff should still catch it.
+    raw = json.dumps({
+        "choice": "AT Cloze",
+        "fields": {"Text": "Cells need {c1::a lot of energy from ATP}} daily."},
+    })
+    result = classify(chunk, shapes, llm=_stub(raw))
+    assert isinstance(result, Overflow)
+    assert "exceeds_budget" in result.reason
+
+
 def test_classify_unknown_field_name_passes_through_for_visibility(shapes: dict, chunk: Chunk) -> None:
     """An LLM that hallucinates a field name we don't know about should keep that
     key as-is — better the user sees the typo in queue review than us silently

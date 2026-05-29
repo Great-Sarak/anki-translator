@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -178,6 +179,16 @@ def classify(
         canonical_fields[canonical_by_lower.get(key.lower(), key)] = str(value)
     fields = canonical_fields
 
+    # Normalize malformed cloze deletion markers. Anki requires {{cN::text}}
+    # but the LLM occasionally emits the first deletion as `{cN::text}}` (one
+    # opening brace) or `{{cN::text}` (one closing brace) — Anki then renders
+    # the literal text instead of producing a cloze card. Fix in place so the
+    # cutoff check below counts deletion-words against the corrected payload.
+    if shape_cfg.shape == "cloze":
+        text_field = shape_cfg.fields.get("text")
+        if text_field and text_field in fields:
+            fields[text_field] = _normalize_cloze_braces(fields[text_field])
+
     budget_violation = _check_cutoffs(fields, shape_cfg)
     if budget_violation:
         return Overflow(chunk=chunk, reason=f"exceeds_budget: {budget_violation}")
@@ -246,6 +257,23 @@ def _check_cutoffs(fields: dict[str, object], shape_cfg: ShapeConfig) -> str | N
                 if violation:
                     return violation
     return None
+
+
+_CLOZE_SINGLE_OPEN_RE = re.compile(r"(?<!\{)\{(c\d+::[^{}]*?)\}\}")
+_CLOZE_SINGLE_CLOSE_RE = re.compile(r"\{\{(c\d+::[^{}]*?)\}(?!\})")
+
+
+def _normalize_cloze_braces(text: str) -> str:
+    """Repair `{cN::...}}` (single open) and `{{cN::...}` (single close) to `{{cN::...}}`.
+
+    Observed empirically on Claude haiku-4-5: the first cloze deletion in a Text
+    field sometimes drops one brace at one end. Subsequent deletions in the same
+    text are usually correctly formed. We fix in-place so downstream consumers
+    (cutoff check, Anki) see a well-formed Text field.
+    """
+    text = _CLOZE_SINGLE_OPEN_RE.sub(r"{{\1}}", text)
+    text = _CLOZE_SINGLE_CLOSE_RE.sub(r"{{\1}}", text)
+    return text
 
 
 def _check_cloze_deletion_words(text: str, max_words: int) -> str | None:
