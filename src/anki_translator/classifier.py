@@ -233,6 +233,33 @@ def classify_chunks(
         return list(pool.map(lambda c: classify(c, shapes, llm=llm), chunks_list))
 
 
+_LIST_ITEM_NUMBER_RE = re.compile(r"(?:^|\s)\d+\.\s")
+_LIST_ITEM_BULLET_RE = re.compile(r"(?:^|\s)[•\-\*]\s")
+
+
+def _count_list_items(text: str) -> int:
+    """Count list items in a Back-field value, handling both multi-line and inline layouts.
+
+    The classifier output may come back from the LLM in two shapes:
+      - Multi-line, one item per line: `"1. A\n2. B\n3. C"`. The original
+        implementation used `splitlines()` which catches this case.
+      - Single logical line with inline delimiters: `"1. A 2. B 3. C"` or
+        `"- A - B - C"`. `splitlines()` returns one line and the cutoff
+        previously passed silently regardless of bullet count.
+
+    When only a single non-empty line is present, count numbered (`\\d+\\. `)
+    or bullet (`• `, `- `, `* `) delimiter markers. Returns the larger of the
+    two counts in case both forms appear, floored at 1 so plain prose still
+    registers as a single item.
+    """
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) > 1:
+        return len(lines)
+    numbered = len(_LIST_ITEM_NUMBER_RE.findall(text))
+    bulleted = len(_LIST_ITEM_BULLET_RE.findall(text))
+    return max(1, numbered, bulleted)
+
+
 def _check_cutoffs(fields: dict[str, object], shape_cfg: ShapeConfig) -> str | None:
     """Return a violation reason if any cutoff is exceeded, else None.
 
@@ -250,15 +277,15 @@ def _check_cutoffs(fields: dict[str, object], shape_cfg: ShapeConfig) -> str | N
         elif cutoff_name == "list_max_items":
             back_field = shape_cfg.fields.get("back")
             if back_field and back_field in fields:
-                items = [ln for ln in str(fields[back_field]).splitlines() if ln.strip()]
-                if len(items) > limit:
-                    return f"{back_field} has {len(items)} items, limit {limit}"
+                count = _count_list_items(str(fields[back_field]))
+                if count > limit:
+                    return f"{back_field} has {count} items, limit {limit}"
         elif cutoff_name == "steps_max":
             back_field = shape_cfg.fields.get("back")
             if back_field and back_field in fields:
-                items = [ln for ln in str(fields[back_field]).splitlines() if ln.strip()]
-                if len(items) > limit:
-                    return f"{back_field} has {len(items)} steps, limit {limit}"
+                count = _count_list_items(str(fields[back_field]))
+                if count > limit:
+                    return f"{back_field} has {count} steps, limit {limit}"
         elif cutoff_name == "deletion_max_words":
             text_field = shape_cfg.fields.get("text")
             if text_field and text_field in fields:
