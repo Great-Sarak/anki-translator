@@ -13,7 +13,14 @@ import pytest
 
 from anki_translator.chunk import Chunk
 from anki_translator.classifier import CardCandidate
-from anki_translator.tagger import build_prompt, generate_tags, tag_candidates
+from anki_translator.config import TaggerConfig
+from anki_translator.tagger import (
+    _filter_seed_vocabulary,
+    _get_openclaw_agent_names,
+    build_prompt,
+    generate_tags,
+    tag_candidates,
+)
 
 
 @pytest.fixture
@@ -182,3 +189,202 @@ def test_tag_candidates_appends_batch_tag_to_each(candidate: CardCandidate) -> N
     stub = _stub(json.dumps({"tags": ["biology"]}))
     results = tag_candidates([candidate, candidate], existing_tags=[], batch_tag="batch-x", llm=stub, max_workers=2)
     assert results == [["biology", "batch-x"], ["biology", "batch-x"]]
+
+
+# ---- seed-vocabulary filter (#38) ----
+
+
+def test_filter_drops_bare_leaves_by_default() -> None:
+    """Default config: bare-leaf tags (no '::') are dropped from the seed."""
+    cfg = TaggerConfig()
+    kept = _filter_seed_vocabulary(
+        ["biology", "biology::organelles", "cell-biology", "physics::quantum"],
+        config=cfg,
+    )
+    assert kept == ["biology::organelles", "physics::quantum"]
+
+
+def test_filter_keeps_bare_leaves_when_opted_in() -> None:
+    cfg = TaggerConfig(include_bare_leaves=True)
+    kept = _filter_seed_vocabulary(
+        ["biology", "biology::organelles", "cell-biology"],
+        config=cfg,
+    )
+    assert kept == ["biology", "biology::organelles", "cell-biology"]
+
+
+def test_filter_drops_builtin_exact_denylist_even_with_bare_leaves() -> None:
+    """`spike` and `cloze` are always dropped, even with include_bare_leaves=True."""
+    cfg = TaggerConfig(include_bare_leaves=True)
+    kept = _filter_seed_vocabulary(
+        ["spike", "cloze", "biology", "Spike", "CLOZE"],
+        config=cfg,
+    )
+    assert kept == ["biology"]  # cases collapsed via .lower()
+
+
+def test_filter_drops_dated_batch_tags() -> None:
+    cfg = TaggerConfig(include_bare_leaves=True)
+    kept = _filter_seed_vocabulary(
+        ["e2e-smoke-2026-05-28", "book-club-2026-01-15", "biology"],
+        config=cfg,
+    )
+    assert kept == ["biology"]
+
+
+def test_filter_drops_anki_skill_testrun_markers() -> None:
+    """The unified test-marker prefix from the rename in sibling repos."""
+    cfg = TaggerConfig(include_bare_leaves=True)
+    kept = _filter_seed_vocabulary(
+        ["anki-skill-testrun-rpc", "anki-skill-testrun-manager",
+         "anki-skill-testrun-translator", "biology"],
+        config=cfg,
+    )
+    assert kept == ["biology"]
+
+
+def test_filter_drops_agent_names() -> None:
+    """Agent ids/names from the openclaw roster (passed in explicitly here)."""
+    cfg = TaggerConfig(include_bare_leaves=True)
+    kept = _filter_seed_vocabulary(
+        ["myrzka", "fheliza", "rukha", "Myrzka", "biology"],
+        config=cfg,
+        agent_names={"myrzka", "fheliza", "rukha", "tava"},
+    )
+    assert kept == ["biology"]
+
+
+def test_filter_applies_extra_deny_patterns_from_config() -> None:
+    cfg = TaggerConfig(include_bare_leaves=True, extra_deny_patterns=[r"^prov-", r"-draft$"])
+    kept = _filter_seed_vocabulary(
+        ["prov-something", "topic-draft", "biology::organelles"],
+        config=cfg,
+    )
+    assert kept == ["biology::organelles"]
+
+
+def test_filter_ignores_invalid_user_regex_patterns() -> None:
+    """Bad regex in config should silently skip, not crash the pipeline."""
+    cfg = TaggerConfig(include_bare_leaves=True, extra_deny_patterns=["[unclosed", "biology"])
+    kept = _filter_seed_vocabulary(["biology", "physics"], config=cfg)
+    # "biology" pattern still drops biology; "[unclosed" is silently skipped.
+    assert "biology" not in kept
+    assert "physics" in kept
+
+
+def test_filter_handles_non_string_and_empty_tags() -> None:
+    cfg = TaggerConfig(include_bare_leaves=True)
+    kept = _filter_seed_vocabulary(["biology", "", None, 42, "  ", "physics"], config=cfg)
+    assert kept == ["biology", "physics"]
+
+
+def test_filter_real_smoke_run_vocab_keeps_only_topical(candidate: CardCandidate) -> None:
+    """End-to-end pin: the exact 8 bare-leaves from the v0.1 smoke run get
+    filtered, leaving only the hierarchical biology tags."""
+    cfg = TaggerConfig()  # default: drop bare leaves
+    smoke_vocab = [
+        "cloze", "spike", "myrzka", "cli-smoke",
+        "anki-rpc-test", "anki-manager-test",
+        "e2e-smoke-2026-05-28", "cell-biology",
+        "biology::organelles", "biology::cellular-respiration",
+        "biochemistry::metabolism",
+    ]
+    kept = _filter_seed_vocabulary(
+        smoke_vocab, config=cfg, agent_names={"myrzka", "fheliza"}
+    )
+    assert kept == [
+        "biology::organelles",
+        "biology::cellular-respiration",
+        "biochemistry::metabolism",
+    ]
+
+
+def test_tag_candidates_filters_seed_before_calling_llm(candidate: CardCandidate) -> None:
+    """The LLM's prompt must contain only the post-filter vocabulary."""
+    captured: list[str] = []
+    def capturing_llm(prompt: str) -> str:
+        captured.append(prompt)
+        return json.dumps({"tags": ["biology"]})
+
+    tag_candidates(
+        [candidate],
+        existing_tags=["myrzka", "spike", "biology::organelles", "cell-biology"],
+        llm=capturing_llm,
+        tagger_config=TaggerConfig(),
+        agent_names={"myrzka"},
+    )
+    prompt = captured[0]
+    assert "biology::organelles" in prompt
+    for scrap in ("myrzka", "spike", "cell-biology"):
+        # The seed bullets are rendered as "- <tag>". Make sure no such bullet exists.
+        assert f"- {scrap}\n" not in prompt and not prompt.rstrip().endswith(f"- {scrap}")
+
+
+def test_tag_candidates_skips_openclaw_when_agent_names_provided(candidate: CardCandidate) -> None:
+    """Passing agent_names=<iterable> should not invoke the openclaw subprocess.
+    Verified by running with a patched _get_openclaw_agent_names that would raise."""
+    import anki_translator.tagger as tagger_mod
+    original = tagger_mod._get_openclaw_agent_names
+    tagger_mod._get_openclaw_agent_names = lambda: (_ for _ in ()).throw(AssertionError("should not be called"))
+    try:
+        results = tag_candidates(
+            [candidate],
+            existing_tags=["biology::organelles"],
+            llm=_stub(json.dumps({"tags": ["biology"]})),
+            agent_names=(),  # explicit empty — skips lookup
+        )
+        assert results == [["biology"]]
+    finally:
+        tagger_mod._get_openclaw_agent_names = original
+
+
+def test_tag_candidates_skips_openclaw_when_disabled_in_config(candidate: CardCandidate) -> None:
+    import anki_translator.tagger as tagger_mod
+    original = tagger_mod._get_openclaw_agent_names
+    tagger_mod._get_openclaw_agent_names = lambda: (_ for _ in ()).throw(AssertionError("should not be called"))
+    try:
+        results = tag_candidates(
+            [candidate],
+            existing_tags=["biology::organelles"],
+            llm=_stub(json.dumps({"tags": ["biology"]})),
+            tagger_config=TaggerConfig(use_openclaw_agents=False),
+        )
+        assert results == [["biology"]]
+    finally:
+        tagger_mod._get_openclaw_agent_names = original
+
+
+def test_get_openclaw_agent_names_parses_canonical_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the parser against the real `openclaw config get agents.list` shape."""
+    import subprocess
+    fake_output = json.dumps([
+        {"id": "myrzka", "name": "Myrzka", "workspace": "/path"},
+        {"id": "fheliza", "name": "Fheliza"},
+        {"id": "no-name-only-id"},
+    ])
+    class FakeResult:
+        stdout = fake_output
+    def fake_run(*args, **kwargs):
+        return FakeResult()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    names = _get_openclaw_agent_names()
+    assert names == {"myrzka", "fheliza", "no-name-only-id"}
+
+
+def test_get_openclaw_agent_names_returns_empty_on_subprocess_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """openclaw missing or erroring shouldn't crash the tagger."""
+    import subprocess
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("openclaw not installed")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _get_openclaw_agent_names() == set()
+
+
+def test_get_openclaw_agent_names_returns_empty_on_malformed_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+    class FakeResult:
+        stdout = "not json"
+    def fake_run(*args, **kwargs):
+        return FakeResult()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _get_openclaw_agent_names() == set()
