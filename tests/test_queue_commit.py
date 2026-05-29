@@ -254,3 +254,62 @@ def test_commit_empty_tags_passes_none(tmp_path: Path) -> None:
     commit_queue(queue_path, mgr)
     call = mgr.upsert_note.call_args_list[0]
     assert call.kwargs["tags"] is None
+
+
+# ---- deck pre-flight ----
+
+
+def test_commit_ensures_deck_exists_before_upsert(tmp_path: Path) -> None:
+    """mgr.add_deck must be called once for the queue's deck, before any upsert."""
+    queue_path = _write_sample_queue(tmp_path, [TaggedCandidate(_candidate(), tags=["t"])])
+    mgr = _fake_mgr()
+    commit_queue(queue_path, mgr)
+    mgr.add_deck.assert_called_once_with("Reading")
+    # Sanity: add_deck happens before upsert_note (per-block path).
+    assert mgr.method_calls[0][0] == "add_deck"
+
+
+def test_commit_ensures_unique_decks_once_each(tmp_path: Path) -> None:
+    """Multiple blocks sharing a deck → a single add_deck for that deck."""
+    queue_path = _write_sample_queue(
+        tmp_path,
+        [
+            TaggedCandidate(_candidate(fields={"Front": "A", "Back": "B"}), tags=["t1"]),
+            TaggedCandidate(_candidate(fields={"Front": "C", "Back": "D"}), tags=["t2"]),
+            TaggedCandidate(_candidate(fields={"Front": "E", "Back": "F"}), tags=["t3"]),
+        ],
+    )
+    mgr = _fake_mgr()
+    commit_queue(queue_path, mgr)
+    # All three blocks share "Reading" (the only deck _write_sample_queue uses).
+    assert mgr.add_deck.call_count == 1
+    assert mgr.upsert_note.call_count == 3
+
+
+def test_commit_add_deck_failure_fails_blocks_without_calling_upsert(tmp_path: Path) -> None:
+    """If add_deck raises (e.g., DeckNotAllowedError), every block for that deck fails
+    before upsert is attempted, with a 'deck setup failed' message."""
+    queue_path = _write_sample_queue(
+        tmp_path,
+        [
+            TaggedCandidate(_candidate(fields={"Front": "A", "Back": "B"}), tags=["t1"]),
+            TaggedCandidate(_candidate(fields={"Front": "C", "Back": "D"}), tags=["t2"]),
+        ],
+    )
+    mgr = MagicMock()
+    mgr.add_deck.side_effect = RuntimeError("deck not allowed for agent 'myrzka'")
+    result = commit_queue(queue_path, mgr)
+    assert mgr.upsert_note.call_count == 0  # no per-block writes attempted
+    assert len(result.failed) == 2
+    for _, msg in result.failed:
+        assert "deck setup failed" in msg
+        assert "Reading" in msg
+    assert queue_path.exists()  # not archived on failure
+
+
+def test_commit_dry_run_skips_add_deck(tmp_path: Path) -> None:
+    """Dry-run must not mutate state — that includes deck creation."""
+    queue_path = _write_sample_queue(tmp_path, [TaggedCandidate(_candidate(), tags=["t"])])
+    mgr = _fake_mgr()
+    commit_queue(queue_path, mgr, dry_run=True)
+    mgr.add_deck.assert_not_called()
