@@ -35,7 +35,7 @@ book:
   source_template: "{title}, {edition}"
   position_template: "ch. {chapter}, p. {page}"
   source_required: ["title", "edition"]
-  position_required: []   # chapter/page filled when available
+  position_required: ["chapter", "page"]   # both needed; partial position is ugly ("ch. , p. 47")
 
 manual:
   description: "Chat paste, hand-written notes, transcript — anything without a stable external identifier"
