@@ -73,17 +73,24 @@ def _load_prompt_template() -> str:
 
 
 def _shapes_block(shapes: dict[str, ShapeConfig]) -> str:
-    """Render the shapes list as it appears in the prompt."""
+    """Render the shapes list as it appears in the prompt.
+
+    Field names are emitted in their canonical (model-defined) casing only.
+    Earlier renderings showed `role=FieldName` which led some models to emit
+    JSON keys in the lowercase role form ("back") instead of the field name
+    ("Back"); the resulting notes were rejected by anki-manager's live schema
+    validation.
+    """
     lines: list[str] = []
     for name, cfg in shapes.items():
-        non_cite_fields = [
-            f"{role}={field_name}"
+        visible_fields = [
+            field_name
             for role, field_name in cfg.fields.items()
             if role not in {"source", "position"}
         ]
         cutoffs_str = ", ".join(f"{k}={v}" for k, v in cfg.cutoffs.items()) or "(no budget)"
         lines.append(
-            f"- \"{name}\" (shape={cfg.shape}): fields {', '.join(non_cite_fields)}; budget: {cutoffs_str}"
+            f"- \"{name}\" (shape={cfg.shape}): fields {', '.join(visible_fields)}; budget: {cutoffs_str}"
         )
     return "\n".join(lines)
 
@@ -157,6 +164,20 @@ def classify(
     if not isinstance(fields, dict):
         return Overflow(chunk=chunk, reason="invalid_response: missing or non-dict 'fields'")
 
+    # Canonicalize LLM-returned field names to the model's actual casing.
+    # Some models occasionally emit lowercase ("back") instead of the canonical
+    # ("Back") despite the prompt — anki-manager's live schema check then
+    # rejects the note. Match case-insensitively against the shape's known
+    # field names and rewrite to canonical casing here, so downstream cutoff
+    # checks and the note payload both see the right keys.
+    canonical_by_lower = {f.lower(): f for f in shape_cfg.fields.values()}
+    canonical_fields: dict[str, str] = {}
+    for key, value in fields.items():
+        if not isinstance(key, str):
+            return Overflow(chunk=chunk, reason="invalid_response: non-string field key")
+        canonical_fields[canonical_by_lower.get(key.lower(), key)] = str(value)
+    fields = canonical_fields
+
     budget_violation = _check_cutoffs(fields, shape_cfg)
     if budget_violation:
         return Overflow(chunk=chunk, reason=f"exceeds_budget: {budget_violation}")
@@ -164,7 +185,7 @@ def classify(
     return CardCandidate(
         note_type=choice,
         shape=shape_cfg.shape,
-        fields={k: str(v) for k, v in fields.items()},
+        fields=fields,
         chunk=chunk,
     )
 

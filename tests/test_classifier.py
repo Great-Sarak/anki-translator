@@ -206,6 +206,73 @@ def test_build_prompt_includes_cutoffs(shapes: dict, chunk: Chunk) -> None:
     assert "deletion_max_words=5" in prompt
 
 
+def test_build_prompt_uses_canonical_field_names_only(shapes: dict, chunk: Chunk) -> None:
+    """Prompt must surface the model's canonical field name (e.g. 'Back'), not the
+    lowercase role ('back'), so the LLM doesn't mirror the wrong casing in its JSON."""
+    prompt = build_prompt(chunk, shapes)
+    # Field listings should not include the `role=Name` form (e.g., 'back=Back').
+    assert "front=Front" not in prompt
+    assert "back=Back" not in prompt
+    assert "text=Text" not in prompt
+    # But the canonical names themselves must still appear.
+    assert "Front" in prompt
+    assert "Back" in prompt
+    assert "Text" in prompt
+
+
+# ---- canonical field-name normalization ----
+
+
+def test_classify_canonicalizes_lowercase_field_keys(shapes: dict, chunk: Chunk) -> None:
+    """LLM occasionally emits lowercase JSON keys ('back') instead of 'Back'.
+    The classifier should rewrite to canonical casing so anki-manager's schema
+    check passes downstream."""
+    stub = _stub(json.dumps({
+        "choice": "AT Basic",
+        "fields": {"front": "mitochondria", "back": "powerhouse of the cell"},
+    }))
+    result = classify(chunk, shapes, llm=stub)
+    assert isinstance(result, CardCandidate)
+    assert result.fields == {"Front": "mitochondria", "Back": "powerhouse of the cell"}
+
+
+def test_classify_canonicalizes_mixed_casing(shapes: dict, chunk: Chunk) -> None:
+    """Some keys canonical, some not — all should land canonical."""
+    stub = _stub(json.dumps({
+        "choice": "AT List",
+        "fields": {"Front": "organelles", "back": "mitochondria\\nribosomes\\nnucleus"},
+    }))
+    result = classify(chunk, shapes, llm=stub)
+    assert isinstance(result, CardCandidate)
+    assert "Front" in result.fields and "Back" in result.fields
+    assert "back" not in result.fields and "front" not in result.fields
+
+
+def test_classify_canonicalization_enforces_cutoff_on_lowercase_back(shapes: dict, chunk: Chunk) -> None:
+    """Cutoff enforcement must run on the canonicalized field — a lowercase 'back'
+    that exceeds the budget must still route to overflow, not slip through."""
+    stub = _stub(json.dumps({
+        "choice": "AT Basic",
+        "fields": {"front": "f", "back": "x" * 201},  # 201 chars vs 200 cutoff
+    }))
+    result = classify(chunk, shapes, llm=stub)
+    assert isinstance(result, Overflow)
+    assert "exceeds_budget" in result.reason
+
+
+def test_classify_unknown_field_name_passes_through_for_visibility(shapes: dict, chunk: Chunk) -> None:
+    """An LLM that hallucinates a field name we don't know about should keep that
+    key as-is — better the user sees the typo in queue review than us silently
+    dropping content."""
+    stub = _stub(json.dumps({
+        "choice": "AT Basic",
+        "fields": {"Front": "f", "Back": "b", "Notes": "extra"},
+    }))
+    result = classify(chunk, shapes, llm=stub)
+    assert isinstance(result, CardCandidate)
+    assert result.fields.get("Notes") == "extra"
+
+
 # ---- batch / parallel ----
 
 
