@@ -131,6 +131,46 @@ def test_classify_routes_to_overflow_when_steps_too_many(shapes: dict, chunk: Ch
     assert "exceeds_budget" in result.reason
 
 
+def test_classify_routes_to_overflow_when_inline_list_too_many_items(shapes: dict, chunk: Chunk) -> None:
+    """AT List limit is 7; an LLM that returns an 8-item list inline on one line
+    (no newlines) must still route to overflow. Pre-#39 fix this slipped through."""
+    inline_list = "1. one 2. two 3. three 4. four 5. five 6. six 7. seven 8. eight"
+    stub = _stub(json.dumps({
+        "choice": "AT List",
+        "fields": {"Front": "organelles", "Back": inline_list},
+    }))
+    result = classify(chunk, shapes, llm=stub)
+    assert isinstance(result, Overflow)
+    assert "exceeds_budget" in result.reason
+    assert "8 items" in result.reason
+
+
+def test_classify_routes_to_overflow_when_inline_bulleted_list_too_many_items(shapes: dict, chunk: Chunk) -> None:
+    """Same as above but with bullet markers (•/-/*) inline."""
+    inline_list = "• one • two • three • four • five • six • seven • eight"
+    stub = _stub(json.dumps({
+        "choice": "AT List",
+        "fields": {"Front": "things", "Back": inline_list},
+    }))
+    result = classify(chunk, shapes, llm=stub)
+    assert isinstance(result, Overflow)
+    assert "exceeds_budget" in result.reason
+    assert "8 items" in result.reason
+
+
+def test_classify_routes_to_overflow_when_inline_steps_too_many(shapes: dict, chunk: Chunk) -> None:
+    """AT Steps limit is 5; inline 6-step list must route to overflow."""
+    inline_steps = "1. boot 2. extract 3. classify 4. tag 5. queue 6. commit"
+    stub = _stub(json.dumps({
+        "choice": "AT Steps",
+        "fields": {"Front": "process", "Back": inline_steps},
+    }))
+    result = classify(chunk, shapes, llm=stub)
+    assert isinstance(result, Overflow)
+    assert "exceeds_budget" in result.reason
+    assert "6 steps" in result.reason
+
+
 def test_classify_routes_to_overflow_when_cloze_deletion_too_long(shapes: dict, chunk: Chunk) -> None:
     """AT Cloze deletion_max_words=5; produce a 6-word deletion → overflow."""
     stub = _stub(json.dumps({
@@ -212,6 +252,21 @@ def test_build_prompt_includes_cutoffs(shapes: dict, chunk: Chunk) -> None:
     prompt = build_prompt(chunk, shapes)
     assert "back_max_chars=200" in prompt
     assert "deletion_max_words=5" in prompt
+
+
+def test_prompt_budget_matches_cutoff_enforcement(shapes: dict, chunk: Chunk) -> None:
+    """The budget rules the LLM sees in the prompt must match what _check_cutoffs
+    actually enforces. Symmetric closure of the PR #37 cloze-brace gap where the
+    prompt and the downstream code diverged silently."""
+    prompt = build_prompt(chunk, shapes)
+    for name, cfg in shapes.items():
+        for cutoff_name, limit in cfg.cutoffs.items():
+            # Every cutoff the classifier checks must be visible in the prompt
+            # so the LLM is asked to satisfy it. If a new cutoff is added in
+            # config but the prompt block doesn't surface it, this test fires.
+            assert f"{cutoff_name}={limit}" in prompt, (
+                f"shape {name!r} cutoff {cutoff_name}={limit} not surfaced in prompt"
+            )
 
 
 def test_build_prompt_shows_canonical_cloze_braces_to_llm(shapes: dict, chunk: Chunk) -> None:
