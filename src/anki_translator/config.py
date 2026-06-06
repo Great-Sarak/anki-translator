@@ -40,6 +40,31 @@ class CitationConvention(BaseModel):
     position_required: list[str] = Field(default_factory=list)
 
 
+class TaggerConfig(BaseModel):
+    """Config for the LLM topic tagger. Loaded from tagger.yaml (optional).
+
+    The seed vocabulary the tagger shows the LLM is filtered to avoid drifting
+    scaffolding artifacts (agent names, test markers, date stamps, shape names)
+    into topical tag output. See Great-Sarak/anki-translator#38 for background.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    include_bare_leaves: bool = False
+    """Whether to keep depth-1 tags (no `::`) in the seed vocabulary shown to the
+    LLM. Default `false` — bare leaves are usually scaffolding artifacts. Set
+    `true` if your collection uses flat single-segment topic tags."""
+
+    extra_deny_patterns: list[str] = Field(default_factory=list)
+    """Additional regex patterns to filter out of the seed vocabulary, on top of
+    the built-in denylist (date stamps, `anki-skill-testrun-*`, fleet agent
+    names, `spike`, `cloze`). Patterns are matched against the lowercased tag."""
+
+    use_openclaw_agents: bool = True
+    """Whether to query `openclaw config get agents.list` for the agent-name
+    denylist. Disable in tests or environments where openclaw isn't installed."""
+
+
 class ConfigError(Exception):
     """Raised when configuration files are missing or invalid."""
 
@@ -69,6 +94,23 @@ def load_shapes(path: Path | str) -> dict[str, ShapeConfig]:
         return {name: ShapeConfig(**cfg) for name, cfg in raw.items()}
     except Exception as e:
         raise ConfigError(f"shapes config failed schema validation: {e}") from e
+
+
+def load_tagger_config(path: Path | str) -> TaggerConfig:
+    """Load tagger.yaml. Missing file → return TaggerConfig() defaults.
+
+    Unlike shapes / citations, the tagger config is optional: most users do not
+    need to tune the seed-vocabulary filter, so a missing file is not an error.
+    A present-but-invalid file IS an error — fail loud rather than silently.
+    """
+    p = Path(path)
+    if not p.exists():
+        return TaggerConfig()
+    raw = _load_yaml_mapping(path, "tagger")
+    try:
+        return TaggerConfig(**raw)
+    except Exception as e:
+        raise ConfigError(f"tagger config failed schema validation: {e}") from e
 
 
 def load_citations(path: Path | str) -> dict[str, CitationConvention]:

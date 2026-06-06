@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import bootstrap as bootstrap_mod
 from . import classifier, tagger
-from .config import load_citations, load_shapes
+from .config import load_citations, load_shapes, load_tagger_config
 from .extractors import ExtractionError
 from .extractors.manual import extract_file as manual_extract_file
 from .extractors.manual import extract_text as manual_extract_text
@@ -41,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     p_ing.add_argument("--tag", help="Batch tag applied to every produced note (e.g. 'book-club-2026')")
     p_ing.add_argument("--label", help="Source label override (default: file stem, today's date for --text)")
     p_ing.add_argument("--shapes", default="config/shapes.yaml")
+    p_ing.add_argument("--tagger-config", default="config/tagger.yaml",
+                       help="Optional tagger config (filter rules for seed vocabulary). Missing file → defaults.")
     p_ing.add_argument("--queue-dir", default="queue")
     p_ing.add_argument("--qa-dir", default="qa")
 
@@ -100,7 +102,10 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     except Exception:
         existing_tags = []  # tagger handles empty vocabulary gracefully
 
-    tag_lists = tagger.tag_candidates(candidates, existing_tags, batch_tag=args.tag)
+    tagger_cfg = load_tagger_config(args.tagger_config)
+    tag_lists = tagger.tag_candidates(
+        candidates, existing_tags, batch_tag=args.tag, tagger_config=tagger_cfg
+    )
     tagged = [TaggedCandidate(c, tags) for c, tags in zip(candidates, tag_lists)]
 
     # 4. Write queue + qa

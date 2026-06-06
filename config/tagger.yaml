@@ -1,0 +1,25 @@
+# tagger.yaml — controls how the LLM tagger filters the existing-tag seed vocabulary.
+#
+# All fields are optional; omit the file entirely to accept defaults. See
+# src/anki_translator/config.py:TaggerConfig for schema. Filter rationale and
+# default denylist are documented in Great-Sarak/anki-translator#38.
+
+# Whether to keep depth-1 tags (no `::`) in the seed vocabulary shown to the LLM.
+# Most scaffolding artifacts (agent names, test markers, shape names) are bare
+# leaves, so the default drops them. Set true if your collection uses flat
+# topic tags like `cell-biology` rather than `biology::cell-biology`.
+include_bare_leaves: false
+
+# Extra regex patterns to drop from the seed vocabulary, on top of the built-in
+# denylist (date stamps, anki-skill-testrun-*, openclaw agent names, the exact
+# terms `spike` and `cloze`). Patterns are matched against the lowercased tag.
+# Example:
+#   extra_deny_patterns:
+#     - "^prov-"
+#     - "-draft$"
+extra_deny_patterns: []
+
+# Whether to query `openclaw config get agents.list` for the agent-name
+# denylist. Disable in environments where openclaw isn't installed or where
+# you want fully deterministic filtering.
+use_openclaw_agents: true
