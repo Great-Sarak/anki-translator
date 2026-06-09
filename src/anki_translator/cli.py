@@ -1,4 +1,4 @@
-"""anki-translator CLI — ingest, commit, bootstrap.
+"""anki-translator CLI — ingest, commit, card, bootstrap.
 
 Thin glue layer over the library modules. Mirrors anki-manager's CLI style (argparse,
 JSON output for machine-readable commands, plain text for human-readable ones).
@@ -7,6 +7,7 @@ JSON output for machine-readable commands, plain text for human-readable ones).
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -52,6 +53,33 @@ def main(argv: list[str] | None = None) -> int:
                        help="Directory for trimmed-chaff overflow (TOC, citations, section headers). "
                             "Substantive overflow still lands in --qa-dir.")
 
+    p_card = sub.add_parser(
+        "card",
+        help="Shape one paragraph into a card via the LLM, then commit or write a queue file",
+    )
+    p_card.add_argument("--from-text", required=True, metavar="TEXT",
+                        help="The prose paragraph to turn into a card")
+    p_card.add_argument("--deck", required=True, help="Anki deck name")
+    p_card.add_argument("--source", default=None,
+                        help="Source citation label (e.g. 'telegram:1040956901#3416'). "
+                             "Defaults to today's date.")
+    p_card.add_argument("--position", default=None,
+                        help="Freeform position string (e.g. '#section-id', 'page 3'). "
+                             "Defaults to empty.")
+    p_card.add_argument("--shape", default=None,
+                        help="Shape hint: if the classifier produces a candidate matching "
+                             "this shape, prefer it. E.g. 'term-def', 'cloze', 'list-recall'.")
+    p_card.add_argument("--commit", action="store_true",
+                        help="Commit directly to Anki instead of writing a queue file. "
+                             "Default: write queue file for review.")
+    p_card.add_argument("--tag", action="append", default=[],
+                        help="Tag to apply to the note (repeatable)")
+    p_card.add_argument("--shapes", default="config/shapes.yaml")
+    p_card.add_argument("--tagger-config", default="config/tagger.yaml")
+    p_card.add_argument("--queue-dir", default="queue")
+    p_card.add_argument("--qa-dir", default="qa")
+    p_card.add_argument("--trimmed-dir", default="trimmed")
+
     p_com = sub.add_parser("commit", help="Parse a reviewed queue file and create notes via anki-manager")
     p_com.add_argument("queue_file", help="Path to a queue/<date>-<slug>.md file")
     p_com.add_argument("--dry-run", action="store_true")
@@ -61,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_bootstrap(args)
     if args.cmd == "ingest":
         return _cmd_ingest(args)
+    if args.cmd == "card":
+        return _cmd_card(args)
     if args.cmd == "commit":
         return _cmd_commit(args)
     return 1
@@ -158,6 +188,99 @@ def _dispatch_extractor(args: argparse.Namespace) -> list:
     if p.suffix.lower() in {".txt", ".md"}:
         return manual_extract_file(p, label=args.label)
     raise ExtractionError(f"cannot determine source type for {src!r}")
+
+
+def _cmd_card(args: argparse.Namespace) -> int:
+    # 1. Extract — single text chunk
+    try:
+        chunks = manual_extract_text(args.from_text, label=args.source)
+    except ExtractionError as e:
+        print(f"error: extraction failed: {e}", file=sys.stderr)
+        return 2
+
+    # Patch position if provided
+    if args.position:
+        chunks = [dataclasses.replace(c, position=args.position) for c in chunks]
+
+    # 2. Classify
+    shapes = load_shapes(args.shapes)
+    candidates: list[classifier.CardCandidate] = []
+    overflow: list[classifier.Overflow] = []
+    for result in classifier.classify_chunks(chunks, shapes):
+        if isinstance(result, classifier.CardCandidate):
+            candidates.append(result)
+        elif isinstance(result, classifier.MultiCardCandidate):
+            candidates.extend(result.rows)
+        else:
+            overflow.append(result)
+
+    if not candidates:
+        print("error: classifier produced no card candidates", file=sys.stderr)
+        return 2
+
+    # Shape hint: prefer first candidate matching the hint, fall back to first overall
+    candidate = candidates[0]
+    if args.shape:
+        match = next((c for c in candidates if c.shape == args.shape), None)
+        if match:
+            candidate = match
+
+    # 3. Tag
+    try:
+        from anki_manager import AnkiManager
+        existing_tags = list(AnkiManager().call("getTags") or [])
+    except Exception:
+        existing_tags = []
+
+    tagger_cfg = load_tagger_config(args.tagger_config)
+    tag_lists = tagger.tag_candidates(
+        [candidate], existing_tags, batch_tag=None, tagger_config=tagger_cfg
+    )
+    # Merge tagger output with user-supplied --tag values (deduplicated, order preserved)
+    tags: list[str] = list(dict.fromkeys(tag_lists[0] + args.tag))
+
+    if args.commit:
+        # 4a. Direct commit to Anki
+        from anki_manager import AnkiManager
+        mgr = AnkiManager()
+        mgr.add_deck(args.deck)
+        result = mgr.upsert_note(
+            args.deck,
+            candidate.note_type,
+            candidate.fields,
+            tags=tags or None,
+        )
+        print(json.dumps({
+            "stable_guid": result.stable_guid,
+            "shape": candidate.shape,
+            "deck": args.deck,
+        }, indent=2))
+        return 0
+
+    # 4b. Write single-block queue file for review
+    tagged = [TaggedCandidate(candidate, tags)]
+    from .queue import overflow_bucket
+    slug = "card-" + make_slug(chunks[0].source, chunks[0].source_type)
+    queue_path, qa_path, trimmed_path = write_queue(
+        tagged=tagged,
+        overflow=overflow,
+        deck=args.deck,
+        slug=slug,
+        queue_dir=args.queue_dir,
+        qa_dir=args.qa_dir,
+        trimmed_dir=args.trimmed_dir,
+    )
+    qa_count = sum(1 for ov in overflow if overflow_bucket(ov.reason) == "qa")
+    print(json.dumps({
+        "queue_file": str(queue_path),
+        "qa_file": str(qa_path),
+        "trimmed_file": str(trimmed_path),
+        "candidates": 1,
+        "shape": candidate.shape,
+        "overflow_qa": qa_count,
+        "overflow_trimmed": len(overflow) - qa_count,
+    }, indent=2))
+    return 0
 
 
 def _cmd_commit(args: argparse.Namespace) -> int:
