@@ -73,12 +73,15 @@ def test_ingest_text_path(monkeypatch, tmp_path: Path, capsys) -> None:
         "--shapes", str(REPO_ROOT / "config" / "shapes.yaml"),
         "--queue-dir", str(tmp_path / "queue"),
         "--qa-dir", str(tmp_path / "qa"),
+        "--trimmed-dir", str(tmp_path / "trimmed"),
     ])
     assert rc == 0
     out = capsys.readouterr().out
     parsed = json.loads(out)
     assert parsed["candidates"] == 2
-    assert parsed["overflow"] == 0
+    assert parsed["overflow_qa"] == 0
+    assert parsed["overflow_trimmed"] == 0
+    assert Path(parsed["trimmed_file"]).exists()
     qpath = Path(parsed["queue_file"])
     assert qpath.exists()
     body = qpath.read_text()
@@ -102,6 +105,7 @@ def test_ingest_md_file_path(monkeypatch, tmp_path: Path, capsys) -> None:
         "--shapes", str(REPO_ROOT / "config" / "shapes.yaml"),
         "--queue-dir", str(tmp_path / "queue"),
         "--qa-dir", str(tmp_path / "qa"),
+        "--trimmed-dir", str(tmp_path / "trimmed"),
     ])
     assert rc == 0
     parsed = json.loads(capsys.readouterr().out)
@@ -115,6 +119,7 @@ def test_ingest_rejects_both_source_and_text(monkeypatch, tmp_path: Path, capsys
         "--deck", "X",
         "--queue-dir", str(tmp_path / "queue"),
         "--qa-dir", str(tmp_path / "qa"),
+        "--trimmed-dir", str(tmp_path / "trimmed"),
     ])
     assert rc == 2
     assert "exactly one" in capsys.readouterr().err
@@ -126,6 +131,7 @@ def test_ingest_rejects_neither_source_nor_text(monkeypatch, tmp_path: Path, cap
         "--deck", "X",
         "--queue-dir", str(tmp_path / "queue"),
         "--qa-dir", str(tmp_path / "qa"),
+        "--trimmed-dir", str(tmp_path / "trimmed"),
     ])
     assert rc == 2
 
@@ -136,6 +142,7 @@ def test_ingest_handles_extraction_error(monkeypatch, tmp_path: Path, capsys) ->
         "--deck", "X",
         "--queue-dir", str(tmp_path / "queue"),
         "--qa-dir", str(tmp_path / "qa"),
+        "--trimmed-dir", str(tmp_path / "trimmed"),
     ])
     assert rc == 2
     assert "extraction failed" in capsys.readouterr().err
@@ -150,6 +157,7 @@ def test_ingest_unknown_source_type_fails(monkeypatch, tmp_path: Path, capsys) -
         "--deck", "X",
         "--queue-dir", str(tmp_path / "queue"),
         "--qa-dir", str(tmp_path / "qa"),
+        "--trimmed-dir", str(tmp_path / "trimmed"),
     ])
     assert rc == 2
     assert "cannot determine source type" in capsys.readouterr().err

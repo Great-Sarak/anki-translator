@@ -36,13 +36,14 @@ def _candidate(fields: dict[str, str] | None = None, note_type: str = "AT Basic"
 
 
 def _write_sample_queue(tmp_path: Path, candidates: list[TaggedCandidate]) -> Path:
-    queue_path, _ = write_queue(
+    queue_path, _, _ = write_queue(
         tagged=candidates,
         overflow=[],
         deck="Reading",
         slug="cells",
         queue_dir=tmp_path / "queue",
         qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
     )
     return queue_path
 

@@ -17,5 +17,7 @@ queue/committed/*
 !queue/committed/.gitkeep
 qa/*
 !qa/.gitkeep
+trimmed/*
+!trimmed/.gitkeep
 ledger/*
 !ledger/.gitkeep

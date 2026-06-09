@@ -61,6 +61,125 @@ def make_slug(source: str, source_type: str) -> str:
     return safe[:MAX_SLUG_LEN] or "untitled"
 
 
+_SUBSTANTIVE_REASON_PREFIXES = (
+    "exceeds_budget:",
+    "invalid_response:",
+    "llm_error:",
+    "no_shape_fit",
+)
+
+_SUBSTANTIVE_SIGNALS = (
+    "multiple distinct facts",
+    "too complex",
+    "too long",
+    "cannot fit",
+    "can't fit",
+    "couldn't fit",
+    "cannot be reduced",
+    "exceed",
+)
+
+_CHAFF_SIGNALS = (
+    # citation / bibliography
+    "bibliographic",
+    "bibliography",  # "Passage is a bibliography entry/citation" appeared in Octopus PDF
+    "citation header",
+    "citation metadata",
+    "citation/header",
+    "is a citation",
+    "is a journal citation",
+    "citation/reference",
+    "passage contains only a citation",
+    "journal citation",
+    "citation with multiple",
+    "publication metadata",
+    # document scaffolding
+    "table of contents",
+    "section header",
+    "section heading",
+    "document header",
+    "document overview",
+    "page header",
+    "structural metadata",
+    "header block",  # "passage is a header block with affiliations and metadata"
+    "list of topic headings",
+    "minireview title",
+    # author / affiliations / acknowledgments
+    "author names",
+    "author names and affiliations",
+    "list of authors",
+    "affiliations and citations",
+    "affiliations and metadata",
+    "acknowledgments",
+    "acknowledgements",
+    "funding information",
+    # transitional / boilerplate / introductory
+    "transitional text",
+    "introductory/transitional",
+    "introductory material",
+    "previews future sections",
+    "upcoming content structure",
+    "boilerplate",
+    "disclaimer",
+    # reference link lists
+    "reference list",
+    "reference links",
+    "list of links",
+    "list of reference links",
+    "collection of reference links",
+    # fragments / incomplete passages — extractor caught a stub of text where the
+    # body is elsewhere; not card material on its own
+    "is a fragment",
+    "passage is fragmentary",
+    "passage is incomplete",
+    "bare taxonomic label",
+    # general "no content"
+    "no substantive content",
+    "no factual content",
+    "no learnable fact",
+    "no discrete fact",
+    "metadata rather than",
+)
+
+
+def overflow_bucket(reason: str) -> str:
+    """Route an Overflow's reason to either 'qa' (substantive) or 'trimmed' (chaff).
+
+    Substantive overflow is content the classifier wanted to make a card from but
+    couldn't quite fit — worth keeping next to the queue as reference material.
+    Trimmed chaff is content with no factual value (citation metadata, TOC entries,
+    section headers, author lists, transitional prose) — useful for spot-checking
+    that nothing important was dropped, but disposable once verified.
+
+    The classifier emits a free-text reason for every overflow except for a small
+    set of classifier-generated prefixes (`exceeds_budget:`, `invalid_response:`,
+    `llm_error:`, `no_shape_fit`). The classifier-emitted reasons are *always*
+    substantive — they fired because real content didn't fit a shape's budget.
+    LLM-emitted reasons we pattern-match against keyword lists.
+
+    Default = qa. Unknown phrasings are kept rather than discarded — easier to
+    extend `_CHAFF_SIGNALS` as new patterns appear than to recover content lost
+    to overreaching trim rules.
+    """
+    if reason.startswith(_SUBSTANTIVE_REASON_PREFIXES):
+        return "qa"
+    lowered = reason.lower()
+    # Chaff check runs first. The LLM frequently rationalizes why a
+    # bibliographic / citation chunk overflowed by saying it "exceeds field
+    # capacity" or "requires multiple metadata fields" — the generic substantive
+    # signal "exceed" then ate the wrong bucket on a live ingest (Cell octopus
+    # PDF, 2026-06-08). A reason that names a chaff content type belongs in
+    # trimmed regardless of how the LLM phrased the budget violation.
+    if any(s in lowered for s in _CHAFF_SIGNALS):
+        return "trimmed"
+    # No chaff signal — fall back to substantive intent ("multiple distinct
+    # facts", "too complex", "cannot fit"). Default to qa for unknown
+    # phrasings; better to over-keep than to silently discard new patterns.
+    if any(s in lowered for s in _SUBSTANTIVE_SIGNALS):
+        return "qa"
+    return "qa"
+
+
 def write_queue(
     tagged: list[TaggedCandidate],
     overflow: list[Overflow],
@@ -69,25 +188,44 @@ def write_queue(
     slug: str,
     queue_dir: Path | str,
     qa_dir: Path | str,
+    trimmed_dir: Path | str,
     ingestion_date: date | None = None,
-) -> tuple[Path, Path]:
-    """Write the queue file and the qa-overflow file for one ingestion.
+) -> tuple[Path, Path, Path]:
+    """Write the queue, qa, and trimmed files for one ingestion.
 
-    Returns (queue_path, qa_path). Both files are always written, even if their respective
-    lists are empty — keeps downstream tooling (commit, archives, audits) consistent.
+    Returns (queue_path, qa_path, trimmed_path). All three files are always
+    written, even if their respective lists are empty — keeps downstream tooling
+    (commit, archives, audits, reviewer spot-checks) consistent. Empty buckets
+    render to a sentinel "no chunks" placeholder.
+
+    Overflows are routed via :func:`overflow_bucket`: substantive overflow
+    (content that wanted to be a card) lands in `qa_dir`, chaff (citation
+    metadata, TOC entries, section headers, etc.) lands in `trimmed_dir`.
     """
     d = ingestion_date or date.today()
     filename = f"{d.isoformat()}-{slug}.md"
 
     queue_path = Path(queue_dir) / filename
     qa_path = Path(qa_dir) / filename
+    trimmed_path = Path(trimmed_dir) / filename
     queue_path.parent.mkdir(parents=True, exist_ok=True)
     qa_path.parent.mkdir(parents=True, exist_ok=True)
+    trimmed_path.parent.mkdir(parents=True, exist_ok=True)
+
+    qa_overflows = [ov for ov in overflow if overflow_bucket(ov.reason) == "qa"]
+    trimmed_overflows = [ov for ov in overflow if overflow_bucket(ov.reason) == "trimmed"]
 
     queue_path.write_text(_render_queue(tagged, deck=deck), encoding="utf-8")
-    qa_path.write_text(_render_qa(overflow, slug=slug, ingestion_date=d), encoding="utf-8")
+    qa_path.write_text(
+        _render_overflow_file(qa_overflows, title="Q&A", slug=slug, ingestion_date=d),
+        encoding="utf-8",
+    )
+    trimmed_path.write_text(
+        _render_overflow_file(trimmed_overflows, title="Trimmed", slug=slug, ingestion_date=d),
+        encoding="utf-8",
+    )
 
-    return queue_path, qa_path
+    return queue_path, qa_path, trimmed_path
 
 
 def _render_queue(tagged: list[TaggedCandidate], *, deck: str) -> str:
@@ -140,9 +278,13 @@ def _inline(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\n", " ").strip()
 
 
-def _render_qa(overflow: list[Overflow], *, slug: str, ingestion_date: date) -> str:
-    """Render the Q&A markdown — one ## section per overflow chunk with its citation header."""
-    header = f"# Q&A — {slug} ({ingestion_date.isoformat()})\n\n"
+def _render_overflow_file(
+    overflow: list[Overflow], *, title: str, slug: str, ingestion_date: date
+) -> str:
+    """Render an overflow markdown file — one ## section per overflow chunk with its
+    citation header. Used for both `qa` (substantive) and `trimmed` (chaff) files;
+    the only difference is the heading."""
+    header = f"# {title} — {slug} ({ingestion_date.isoformat()})\n\n"
     if not overflow:
         return header + "No overflow chunks from this ingestion.\n"
 
