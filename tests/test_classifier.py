@@ -502,3 +502,178 @@ def test_resolve_concurrency_ignores_zero_or_negative_env(monkeypatch: pytest.Mo
     assert resolve_concurrency() == 9
     monkeypatch.setenv("ANKI_TRANSLATOR_CONCURRENCY", "-1")
     assert resolve_concurrency() == 9
+
+
+# ---- term-table multi-card classification (#52) ----
+
+
+# Import here to avoid touching the import block at the top during the PR.
+from anki_translator.classifier import MultiCardCandidate  # noqa: E402
+
+
+DISPLAYPORT_TABLE_TEXT = (
+    "#### Version / bandwidth\n"
+    "\n"
+    "| Version | Link rate | Total bandwidth | Top resolution (with DSC) |\n"
+    "|---|---|---|---|\n"
+    "| DP 1.2 | HBR2 | 21.6 Gbps | 4K@60 |\n"
+    "| DP 1.4 | HBR3 | 25.92 Gbps | 8K@60 |\n"
+    "| DP 2.0 | UHBR 20 | 80 Gbps | 16K@60 |\n"
+)
+
+
+def _table_chunk() -> Chunk:
+    return Chunk(
+        text=DISPLAYPORT_TABLE_TEXT,
+        source="2026-05-30-cable-identification-and-testing",
+        position="#2-2-displayport",
+        source_type="manual",
+        metadata={},
+    )
+
+
+def test_classify_term_table_expands_rows_to_multi_card_candidate(shapes: dict) -> None:
+    """Pinning test for #52: an AT Table response with N rows × M attrs yields
+    a MultiCardCandidate wrapping N CardCandidates (one per row), each with its
+    Key + AttrN/AttrNValue slots populated. Anki's conditional templates emit
+    one card per non-empty AttrN slot at note creation; the classifier's job is
+    just to produce the row-level CardCandidates."""
+    stub = _stub(json.dumps({
+        "choice": "AT Table",
+        "rows": [
+            {"key": "DP 1.2", "attrs": [
+                {"name": "Link rate", "value": "HBR2"},
+                {"name": "Total bandwidth", "value": "21.6 Gbps"},
+                {"name": "Top resolution (with DSC)", "value": "4K@60"},
+            ]},
+            {"key": "DP 1.4", "attrs": [
+                {"name": "Link rate", "value": "HBR3"},
+                {"name": "Total bandwidth", "value": "25.92 Gbps"},
+                {"name": "Top resolution (with DSC)", "value": "8K@60"},
+            ]},
+            {"key": "DP 2.0", "attrs": [
+                {"name": "Link rate", "value": "UHBR 20"},
+                {"name": "Total bandwidth", "value": "80 Gbps"},
+                {"name": "Top resolution (with DSC)", "value": "16K@60"},
+            ]},
+        ],
+    }))
+    result = classify(_table_chunk(), shapes, llm=stub)
+    assert isinstance(result, MultiCardCandidate), result
+    assert len(result.rows) == 3
+    first = result.rows[0]
+    assert first.note_type == "AT Table"
+    assert first.shape == "term-table"
+    assert first.fields["Key"] == "DP 1.2"
+    assert first.fields["Attr1Name"] == "Link rate"
+    assert first.fields["Attr1Value"] == "HBR2"
+    assert first.fields["Attr2Name"] == "Total bandwidth"
+    assert first.fields["Attr3Value"] == "4K@60"
+    # Unused slots stay absent (conditional templates won't emit a card for them).
+    assert "Attr4Name" not in first.fields
+    assert "Attr4Value" not in first.fields
+
+
+def test_classify_term_table_overflows_when_row_exceeds_row_max_attrs(shapes: dict) -> None:
+    """Five attrs in one row exceeds the row_max_attrs=4 cutoff → overflow.
+    Important: the cutoff is enforced post-LLM, the same way every other shape's
+    cutoff is, because the LLM may self-report compliance without actually
+    complying."""
+    stub = _stub(json.dumps({
+        "choice": "AT Table",
+        "rows": [
+            {"key": "DP 1.2", "attrs": [
+                {"name": "A", "value": "1"},
+                {"name": "B", "value": "2"},
+                {"name": "C", "value": "3"},
+                {"name": "D", "value": "4"},
+                {"name": "E", "value": "5"},  # one too many
+            ]},
+        ],
+    }))
+    result = classify(_table_chunk(), shapes, llm=stub)
+    assert isinstance(result, Overflow), result
+    assert "exceeds_budget" in result.reason
+    assert "5 attrs" in result.reason
+
+
+def test_classify_term_table_overflows_when_attr_value_too_long(shapes: dict) -> None:
+    """An attribute value longer than attr_max_chars=80 → overflow, not silent
+    truncation."""
+    long_value = "x" * 81
+    stub = _stub(json.dumps({
+        "choice": "AT Table",
+        "rows": [
+            {"key": "DP 1.2", "attrs": [
+                {"name": "Link rate", "value": long_value},
+            ]},
+        ],
+    }))
+    result = classify(_table_chunk(), shapes, llm=stub)
+    assert isinstance(result, Overflow), result
+    assert "exceeds_budget" in result.reason
+
+
+def test_classify_term_table_overflows_on_missing_rows(shapes: dict) -> None:
+    stub = _stub(json.dumps({"choice": "AT Table", "fields": {"Key": "DP 1.2"}}))
+    result = classify(_table_chunk(), shapes, llm=stub)
+    assert isinstance(result, Overflow), result
+    assert "invalid_response" in result.reason
+    assert "rows" in result.reason
+
+
+def test_classify_term_table_overflows_on_empty_rows(shapes: dict) -> None:
+    stub = _stub(json.dumps({"choice": "AT Table", "rows": []}))
+    result = classify(_table_chunk(), shapes, llm=stub)
+    assert isinstance(result, Overflow), result
+    assert "invalid_response" in result.reason
+
+
+def test_classify_term_table_overflows_on_missing_key(shapes: dict) -> None:
+    stub = _stub(json.dumps({
+        "choice": "AT Table",
+        "rows": [{"attrs": [{"name": "Link rate", "value": "HBR2"}]}],
+    }))
+    result = classify(_table_chunk(), shapes, llm=stub)
+    assert isinstance(result, Overflow), result
+    assert "missing 'key'" in result.reason
+
+
+def test_build_prompt_includes_term_table_response_shape(shapes: dict, chunk: Chunk) -> None:
+    """The prompt must teach the model the term-table response shape (`rows`+`attrs`)
+    so the LLM doesn't try to flatten attribute columns into `fields`."""
+    prompt = build_prompt(chunk, shapes)
+    assert "term-table" in prompt
+    # Response shape advertised:
+    assert "rows" in prompt
+    assert "attrs" in prompt
+    # AT Table shape gets the conceptual rendering, not the flat field list:
+    assert "attribute pairs" in prompt
+    assert "Attr1Name" not in prompt  # confusing flat names suppressed for term-table
+
+
+def test_classify_chunks_flattens_multi_card_into_results(shapes: dict) -> None:
+    """classify_chunks() returns a flat list in input order, with MultiCardCandidate
+    preserved as a single entry (caller flattens). Today the cli does that flatten
+    in its loop — this test pins the contract so a future refactor doesn't
+    silently start spreading the rows here."""
+    table_response = json.dumps({
+        "choice": "AT Table",
+        "rows": [
+            {"key": "DP 1.2", "attrs": [{"name": "Link rate", "value": "HBR2"}]},
+            {"key": "DP 1.4", "attrs": [{"name": "Link rate", "value": "HBR3"}]},
+        ],
+    })
+    basic_response = json.dumps({
+        "choice": "AT Basic",
+        "fields": {"Front": "mito", "Back": "powerhouse"},
+    })
+    responses = iter([table_response, basic_response])
+    llm = lambda _prompt: next(responses)
+
+    chunks = [_table_chunk(), Chunk(text="x", source="s", position="", source_type="manual", metadata={})]
+    results = classify_chunks(chunks, shapes, llm=llm, max_workers=1)
+    assert len(results) == 2
+    assert isinstance(results[0], MultiCardCandidate)
+    assert len(results[0].rows) == 2
+    assert isinstance(results[1], CardCandidate)
