@@ -82,6 +82,7 @@ _SUBSTANTIVE_SIGNALS = (
 _CHAFF_SIGNALS = (
     # citation / bibliography
     "bibliographic",
+    "bibliography",  # "Passage is a bibliography entry/citation" appeared in Octopus PDF
     "citation header",
     "citation metadata",
     "citation/header",
@@ -100,18 +101,24 @@ _CHAFF_SIGNALS = (
     "document overview",
     "page header",
     "structural metadata",
+    "header block",  # "passage is a header block with affiliations and metadata"
+    "list of topic headings",
+    "minireview title",
     # author / affiliations / acknowledgments
     "author names",
     "author names and affiliations",
     "list of authors",
     "affiliations and citations",
+    "affiliations and metadata",
     "acknowledgments",
     "acknowledgements",
     "funding information",
-    # transitional / boilerplate
+    # transitional / boilerplate / introductory
     "transitional text",
     "introductory/transitional",
+    "introductory material",
     "previews future sections",
+    "upcoming content structure",
     "boilerplate",
     "disclaimer",
     # reference link lists
@@ -120,6 +127,12 @@ _CHAFF_SIGNALS = (
     "list of links",
     "list of reference links",
     "collection of reference links",
+    # fragments / incomplete passages — extractor caught a stub of text where the
+    # body is elsewhere; not card material on its own
+    "is a fragment",
+    "passage is fragmentary",
+    "passage is incomplete",
+    "bare taxonomic label",
     # general "no content"
     "no substantive content",
     "no factual content",

@@ -355,6 +355,22 @@ def test_overflow_bucket_routes_chaff_phrasings_to_trimmed() -> None:
         "Passage is acknowledgments/funding information with no standalone fact suitable for flashcard memorization.",
         "Passage is introductory/transitional text that previews future sections rather than stating a discrete fact suitable for flashcard memorization.",
         "This is a standard boilerplate disclaimer unsuitable for memorization as educational content.",
+        # Surfaced on the post-#46 re-ingest of the octopus PDF + mitochondrion
+        # (2026-06-09). These leaked into qa because the original chaff list
+        # missed "bibliography" (without -ic), "header block", "list of topic
+        # headings", "minireview title", "introductory material", fragments,
+        # bare taxonomic labels, and "passage is incomplete".
+        "Passage is a bibliography citation without a question-answer or fact suitable for flashcard memorization.",
+        "Passage is a bibliography entry, not factual content suitable for flashcard conversion.",
+        "passage is a header block with affiliations and metadata, not a fact suitable for flashcard encoding",
+        "Passage is a list of topic headings without definitions or explanatory content; insufficient factual substance for any card shape.",
+        "Passage is a minireview title without substantive factual content suitable for flashcard encoding.",
+        "Passage is introductory material about upcoming content structure; contains no standalone factual content suitable for flashcard conversion.",
+        "Passage is a fragment lacking definition or context; cannot form a complete flashcard fact.",
+        "passage is fragmentary and lacks sufficient content to form a complete flashcard fact",
+        "Passage is a bare taxonomic label with no definitional content suitable for flashcard encoding.",
+        "Passage is incomplete — it announces a list of transport modes but provides no details to fit within any shape's budget.",
+        "Passage is incomplete—it introduces a list of purposes but provides no actual list items to memorize.",
     ]
     for reason in chaff_reasons:
         assert overflow_bucket(reason) == "trimmed", f"expected trimmed for: {reason!r}"
