@@ -583,9 +583,43 @@ def test_classify_term_table_expands_rows_to_multi_card_candidate(shapes: dict) 
     assert first.fields["Attr1Value"] == "HBR2"
     assert first.fields["Attr2Name"] == "Total bandwidth"
     assert first.fields["Attr3Value"] == "4K@60"
-    # Unused slots stay absent (conditional templates won't emit a card for them).
-    assert "Attr4Name" not in first.fields
-    assert "Attr4Value" not in first.fields
+    # Unused slots are present as empty strings — anki-manager rejects notes with
+    # missing model fields, but Anki's conditional templates ({{#Attr4Name}}...{{/}})
+    # suppress empty cards at render time, so this is the correct shape.
+    assert first.fields["Attr4Name"] == ""
+    assert first.fields["Attr4Value"] == ""
+
+
+def test_classify_term_table_backfills_all_unused_attr_slots_with_empty_strings(shapes: dict) -> None:
+    """Regression for the InvalidNoteError when a row has fewer than attrs_per_row_max
+    attributes: every attr slot defined in the shape must be present in fields, with
+    empty string for unused slots. Otherwise anki-manager rejects the note with
+    'Model 'AT Table' requires fields not provided: [...]'."""
+    stub = _stub(json.dumps({
+        "choice": "AT Table",
+        "rows": [
+            {"key": "Single-attr row", "attrs": [
+                {"name": "Color", "value": "red"},
+            ]},
+            {"key": "Two-attr row", "attrs": [
+                {"name": "Color", "value": "blue"},
+                {"name": "Size", "value": "large"},
+            ]},
+        ],
+    }))
+    result = classify(_table_chunk(), shapes, llm=stub)
+    assert isinstance(result, MultiCardCandidate), result
+    # Every row, every attr slot present (populated or "")
+    for row in result.rows:
+        for i in range(1, 5):
+            assert f"Attr{i}Name" in row.fields, f"missing Attr{i}Name in {row.fields}"
+            assert f"Attr{i}Value" in row.fields, f"missing Attr{i}Value in {row.fields}"
+    # Populated slots have content; unused slots are empty strings
+    one_attr = result.rows[0]
+    assert one_attr.fields["Attr1Name"] == "Color"
+    assert one_attr.fields["Attr2Name"] == ""
+    assert one_attr.fields["Attr3Name"] == ""
+    assert one_attr.fields["Attr4Name"] == ""
 
 
 def test_classify_term_table_overflows_when_row_exceeds_attrs_per_row_max(shapes: dict) -> None:

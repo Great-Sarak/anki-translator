@@ -326,6 +326,17 @@ def _classify_term_table(
             fields[shape_cfg.fields[name_role]] = name
             fields[shape_cfg.fields[value_role]] = value
 
+        # Backfill unused attribute slots with empty strings so anki-manager's
+        # validate-all-fields-present check passes. Conditional templates
+        # ({{#AttrNName}}...{{/AttrNName}}) suppress empty cards at render time.
+        for unused_idx in range(len(attrs) + 1, attrs_per_row_max + 1):
+            name_role = f"attr{unused_idx}_name"
+            value_role = f"attr{unused_idx}_value"
+            if name_role in shape_cfg.fields:
+                fields.setdefault(shape_cfg.fields[name_role], "")
+            if value_role in shape_cfg.fields:
+                fields.setdefault(shape_cfg.fields[value_role], "")
+
         candidates.append(CardCandidate(
             note_type=note_type,
             shape=shape_cfg.shape,
