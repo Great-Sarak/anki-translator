@@ -16,6 +16,8 @@ Rules:
 
 Respond with JSON only. No prose, no markdown fence, no commentary.
 
+Return a single JSON object, never an array. If the passage does not fit a term-table shape but holds multiple distinct facts, pick the single most central one and use overflow for the rest by choosing "overflow" with a reason like "passage holds multiple distinct facts".
+
 If a non-term-table shape fits:
 {{"choice": "<note-type name>", "fields": {{"<FieldName>": "<value>", ...}}}}
 

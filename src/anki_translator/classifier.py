@@ -183,6 +183,11 @@ def classify(
     except json.JSONDecodeError:
         return Overflow(chunk=chunk, reason="invalid_response: not JSON")
 
+    if isinstance(parsed, list):
+        return Overflow(
+            chunk=chunk,
+            reason="invalid_response: got array (expected single object)",
+        )
     if not isinstance(parsed, dict) or "choice" not in parsed:
         return Overflow(chunk=chunk, reason="invalid_response: missing 'choice'")
 
