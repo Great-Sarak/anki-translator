@@ -10,14 +10,19 @@ Rules:
 - Field values must be derived from the passage. Do not invent or pad.
 - Keep field values as terse as possible — flashcards work best when one fact lives on one card.
 - For cloze shapes: deletions go in {{{{c1::word}}}} {{{{c2::other word}}}} form — double braces on each side, every deletion. Cloze deletions should be the key concepts to memorize.
+- For any markdown reference table with a lookup column (e.g. version × link rate × bandwidth; tester × price × what-it-tests), use a term-table shape if one is available — even if the passage also contains prose around the table. Emit one entry in `rows` per source-table row; let the prose overflow if it has additional facts. Term-table responses use a different output shape — see below.
+- The term-table budget `attrs_per_row_max` is a PER-ROW cap on attribute count. It does NOT cap the total number of rows. A 7-row table with 2 value columns (e.g. Pick + Cost) is fine — it has 2 attrs per row, well under a per-row cap of 4.
 - Source and Position fields will be filled by the caller, not by you. Do not output them.
 
 Respond with JSON only. No prose, no markdown fence, no commentary.
 
-Return a single JSON object, never an array. If the passage holds multiple distinct facts, pick the single most central one and use overflow for the rest by choosing "overflow" with a reason like "passage holds multiple distinct facts".
+Return a single JSON object, never an array. If the passage holds multiple distinct facts AND none of them is a reference table that fits term-table, pick the single most central fact and overflow the rest with a reason like "passage holds multiple distinct facts". If at least one of the facts is a clean term-table fit, prefer term-table for that table (the rest of the passage will overflow naturally).
 
-If a shape fits:
+If a non-term-table shape fits:
 {{"choice": "<note-type name>", "fields": {{"<FieldName>": "<value>", ...}}}}
+
+If a term-table shape fits (each row of the source table becomes one entry in `rows`; each value column becomes one `attrs` entry per row):
+{{"choice": "<note-type name>", "rows": [{{"key": "<lookup-column value>", "attrs": [{{"name": "<value-column header>", "value": "<cell value>"}}, ...]}}, ...]}}
 
 If no shape fits within its budget:
 {{"choice": "overflow", "reason": "<one short sentence>"}}

@@ -8,7 +8,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-Shape = Literal["term-def", "cloze", "term-list", "term-steps"]
+Shape = Literal["term-def", "cloze", "term-list", "term-steps", "term-table"]
 SourceType = Literal["url", "doi", "pdf", "book", "manual"]
 
 

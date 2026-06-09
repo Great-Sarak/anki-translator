@@ -46,3 +46,21 @@
     position: Position
   cutoffs:
     steps_max: 5
+
+"AT Table":
+  shape: term-table
+  fields:
+    key: Key
+    attr1_name: Attr1Name
+    attr1_value: Attr1Value
+    attr2_name: Attr2Name
+    attr2_value: Attr2Value
+    attr3_name: Attr3Name
+    attr3_value: Attr3Value
+    attr4_name: Attr4Name
+    attr4_value: Attr4Value
+    source: Source
+    position: Position
+  cutoffs:
+    attrs_per_row_max: 4
+    attr_max_chars: 80

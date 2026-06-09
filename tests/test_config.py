@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def test_load_starter_shapes() -> None:
     """The shipped config/shapes.yaml loads cleanly and contains the AT-prefixed starter set."""
     shapes = load_shapes(REPO_ROOT / "config" / "shapes.yaml")
-    assert set(shapes.keys()) == {"AT Basic", "AT Cloze", "AT List", "AT Steps"}
+    assert set(shapes.keys()) == {"AT Basic", "AT Cloze", "AT List", "AT Steps", "AT Table"}
     assert shapes["AT Basic"].shape == "term-def"
     assert shapes["AT Basic"].fields["source"] == "Source"
     assert shapes["AT Basic"].cutoffs["back_max_chars"] == 200
