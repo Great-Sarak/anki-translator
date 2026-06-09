@@ -45,6 +45,9 @@ def main(argv: list[str] | None = None) -> int:
                        help="Optional tagger config (filter rules for seed vocabulary). Missing file → defaults.")
     p_ing.add_argument("--queue-dir", default="queue")
     p_ing.add_argument("--qa-dir", default="qa")
+    p_ing.add_argument("--trimmed-dir", default="trimmed",
+                       help="Directory for trimmed-chaff overflow (TOC, citations, section headers). "
+                            "Substantive overflow still lands in --qa-dir.")
 
     p_com = sub.add_parser("commit", help="Parse a reviewed queue file and create notes via anki-manager")
     p_com.add_argument("queue_file", help="Path to a queue/<date>-<slug>.md file")
@@ -110,22 +113,28 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     )
     tagged = [TaggedCandidate(c, tags) for c, tags in zip(candidates, tag_lists)]
 
-    # 4. Write queue + qa
+    # 4. Write queue + qa + trimmed (overflow is split via overflow_bucket)
     first_chunk = chunks[0]
     slug = make_slug(first_chunk.source, first_chunk.source_type)
-    queue_path, qa_path = write_queue(
+    queue_path, qa_path, trimmed_path = write_queue(
         tagged=tagged,
         overflow=overflow,
         deck=args.deck,
         slug=slug,
         queue_dir=args.queue_dir,
         qa_dir=args.qa_dir,
+        trimmed_dir=args.trimmed_dir,
     )
+    from .queue import overflow_bucket
+    qa_count = sum(1 for ov in overflow if overflow_bucket(ov.reason) == "qa")
+    trimmed_count = len(overflow) - qa_count
     print(json.dumps({
         "queue_file": str(queue_path),
         "qa_file": str(qa_path),
+        "trimmed_file": str(trimmed_path),
         "candidates": len(tagged),
-        "overflow": len(overflow),
+        "overflow_qa": qa_count,
+        "overflow_trimmed": trimmed_count,
     }, indent=2))
     return 0
 

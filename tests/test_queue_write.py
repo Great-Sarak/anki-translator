@@ -72,29 +72,33 @@ def test_make_slug_collapses_runs_of_hyphens() -> None:
 
 
 def test_write_queue_creates_both_files(tmp_path: Path) -> None:
-    queue_path, qa_path = write_queue(
+    queue_path, qa_path, trimmed_path = write_queue(
         tagged=[TaggedCandidate(_candidate(), tags=["biology", "biology::organelles"])],
         overflow=[],
         deck="Reading",
         slug="example-com-cells",
         queue_dir=tmp_path / "queue",
         qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
         ingestion_date=date(2026, 5, 27),
     )
     assert queue_path.exists()
     assert qa_path.exists()
+    assert trimmed_path.exists()
     assert queue_path.name == "2026-05-27-example-com-cells.md"
     assert qa_path.name == "2026-05-27-example-com-cells.md"
+    assert trimmed_path.name == "2026-05-27-example-com-cells.md"
 
 
 def test_queue_file_block_structure(tmp_path: Path) -> None:
-    queue_path, _ = write_queue(
+    queue_path, _, _ = write_queue(
         tagged=[TaggedCandidate(_candidate(), tags=["biology", "biology::organelles"])],
         overflow=[],
         deck="Reading",
         slug="cells",
         queue_dir=tmp_path / "queue",
         qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
         ingestion_date=date(2026, 5, 27),
     )
     body = queue_path.read_text()
@@ -115,13 +119,14 @@ def test_queue_file_separates_multiple_cards(tmp_path: Path) -> None:
         TaggedCandidate(_candidate(fields={"Front": "C", "Back": "D"}), tags=["t2"]),
         TaggedCandidate(_candidate(fields={"Front": "E", "Back": "F"}), tags=["t3"]),
     ]
-    queue_path, _ = write_queue(
+    queue_path, _, _ = write_queue(
         tagged=candidates,
         overflow=[],
         deck="Reading",
         slug="multi",
         queue_dir=tmp_path / "queue",
         qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
         ingestion_date=date(2026, 5, 27),
     )
     body = queue_path.read_text()
@@ -138,13 +143,14 @@ def test_queue_file_cloze_uses_text_field(tmp_path: Path) -> None:
         shape="cloze",
         fields={"Text": "The {{c1::mitochondria}} is the powerhouse of the cell."},
     )
-    queue_path, _ = write_queue(
+    queue_path, _, _ = write_queue(
         tagged=[TaggedCandidate(cloze_candidate, tags=["biology"])],
         overflow=[],
         deck="Reading",
         slug="cloze-test",
         queue_dir=tmp_path / "queue",
         qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
         ingestion_date=date(2026, 5, 27),
     )
     body = queue_path.read_text()
@@ -160,13 +166,14 @@ def test_qa_file_renders_overflow(tmp_path: Path) -> None:
         Overflow(chunk=_chunk("Some long discursive paragraph that does not fit a card."), reason="no_shape_fit"),
         Overflow(chunk=_chunk("Another overflow chunk with context."), reason="exceeds_budget: Back is 250 chars"),
     ]
-    _, qa_path = write_queue(
+    _, qa_path, _ = write_queue(
         tagged=[],
         overflow=overflow,
         deck="Reading",
         slug="cells",
         queue_dir=tmp_path / "queue",
         qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
         ingestion_date=date(2026, 5, 27),
     )
     body = qa_path.read_text()
@@ -179,13 +186,14 @@ def test_qa_file_renders_overflow(tmp_path: Path) -> None:
 
 
 def test_qa_file_empty_overflow_still_written(tmp_path: Path) -> None:
-    _, qa_path = write_queue(
+    _, qa_path, _ = write_queue(
         tagged=[TaggedCandidate(_candidate(), tags=["t"])],
         overflow=[],
         deck="Reading",
         slug="cells",
         queue_dir=tmp_path / "queue",
         qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
         ingestion_date=date(2026, 5, 27),
     )
     body = qa_path.read_text()
@@ -193,13 +201,14 @@ def test_qa_file_empty_overflow_still_written(tmp_path: Path) -> None:
 
 
 def test_queue_file_empty_candidates_still_written(tmp_path: Path) -> None:
-    queue_path, _ = write_queue(
+    queue_path, _, _ = write_queue(
         tagged=[],
         overflow=[Overflow(chunk=_chunk(), reason="no_shape_fit")],
         deck="Reading",
         slug="cells",
         queue_dir=tmp_path / "queue",
         qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
         ingestion_date=date(2026, 5, 27),
     )
     body = queue_path.read_text()
@@ -209,6 +218,7 @@ def test_queue_file_empty_candidates_still_written(tmp_path: Path) -> None:
 def test_write_queue_creates_missing_directories(tmp_path: Path) -> None:
     queue_dir = tmp_path / "deeply" / "nested" / "queue"
     qa_dir = tmp_path / "other" / "qa"
+    trimmed_dir = tmp_path / "yet" / "another" / "trimmed"
     write_queue(
         tagged=[TaggedCandidate(_candidate(), tags=["t"])],
         overflow=[],
@@ -216,20 +226,23 @@ def test_write_queue_creates_missing_directories(tmp_path: Path) -> None:
         slug="cells",
         queue_dir=queue_dir,
         qa_dir=qa_dir,
+        trimmed_dir=trimmed_dir,
         ingestion_date=date(2026, 5, 27),
     )
     assert queue_dir.exists()
     assert qa_dir.exists()
+    assert trimmed_dir.exists()
 
 
 def test_queue_file_no_tags_renders_cleanly(tmp_path: Path) -> None:
-    queue_path, _ = write_queue(
+    queue_path, _, _ = write_queue(
         tagged=[TaggedCandidate(_candidate(), tags=[])],
         overflow=[],
         deck="Reading",
         slug="cells",
         queue_dir=tmp_path / "queue",
         qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
         ingestion_date=date(2026, 5, 27),
     )
     body = queue_path.read_text()
@@ -239,13 +252,14 @@ def test_queue_file_no_tags_renders_cleanly(tmp_path: Path) -> None:
 def test_queue_file_multiline_field_inlined(tmp_path: Path) -> None:
     """Field values with embedded newlines must be inlined onto one markdown line."""
     multiline = _candidate(fields={"Front": "x", "Back": "line one\nline two\nline three"})
-    queue_path, _ = write_queue(
+    queue_path, _, _ = write_queue(
         tagged=[TaggedCandidate(multiline, tags=["t"])],
         overflow=[],
         deck="Reading",
         slug="cells",
         queue_dir=tmp_path / "queue",
         qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
         ingestion_date=date(2026, 5, 27),
     )
     body = queue_path.read_text()
@@ -281,13 +295,14 @@ def test_queue_file_renders_term_table_row_as_separate_block(tmp_path: Path) -> 
             },
         ),
     ]
-    queue_path, _qa_path = write_queue(
+    queue_path, _qa_path, _trimmed_path = write_queue(
         tagged=[TaggedCandidate(c, tags=["video::displayport"]) for c in rows],
         overflow=[],
         deck="Myrzka::Cables",
         slug="dp",
         queue_dir=tmp_path / "queue",
         qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
     )
     body = queue_path.read_text()
     # Two blocks, one per row, in order.
@@ -300,3 +315,176 @@ def test_queue_file_renders_term_table_row_as_separate_block(tmp_path: Path) -> 
     assert "**Attr1Value:** HBR2" in body
     assert "**Attr3Value:** 4K@60" in body
     assert "**Model:** AT Table" in body
+
+
+# ---- overflow_bucket + qa/trimmed split (#46) ----
+
+
+from anki_translator.queue import overflow_bucket  # noqa: E402
+
+
+def test_overflow_bucket_routes_classifier_emitted_reasons_to_qa() -> None:
+    """Reasons emitted directly by the classifier (not the LLM) always indicate
+    substantive overflow — they fired because real content didn't fit a budget
+    or a parse failed. Never trimmed."""
+    assert overflow_bucket("exceeds_budget: Back is 208 chars, limit 200") == "qa"
+    assert overflow_bucket("exceeds_budget: row 1 attr 1 value is 114 chars, limit 80") == "qa"
+    assert overflow_bucket("invalid_response: missing 'choice'") == "qa"
+    assert overflow_bucket("invalid_response: got array (expected single object)") == "qa"
+    assert overflow_bucket("llm_error: RuntimeError") == "qa"
+    assert overflow_bucket("no_shape_fit") == "qa"
+
+
+def test_overflow_bucket_routes_chaff_phrasings_to_trimmed() -> None:
+    """Sampled directly from the post-#52 cable-id qa file and the earlier
+    octopus PDF qa file. Each phrasing here actually appeared in a live
+    overflow reason and should route to trimmed."""
+    chaff_reasons = [
+        # cable-id ingest
+        "Passage is a section header with no substantive content to convert into a flashcard.",
+        "Passage is a section heading with no factual content to encode.",
+        "Passage is a reference list of links without standalone factual content suitable for flashcard format.",
+        "Passage is a collection of reference links without structured factual content suitable for flashcard encoding.",
+        "Passage is a table of contents—structural metadata rather than a fact suitable for flashcard memorization.",
+        "Passage is a document header/overview; no discrete fact suitable for flashcard extraction.",
+        # octopus PDF
+        "Bibliographic citation does not fit any flashcard shape's instructional purpose.",
+        "Bibliographic reference does not fit flashcard format—it is metadata, not a learnable fact or concept.",
+        "Citation metadata does not contain a factual claim suitable for flashcard learning.",
+        "Passage is a list of author names and affiliations with no factual content suitable for flashcard learning.",
+        "Passage is acknowledgments/funding information with no standalone fact suitable for flashcard memorization.",
+        "Passage is introductory/transitional text that previews future sections rather than stating a discrete fact suitable for flashcard memorization.",
+        "This is a standard boilerplate disclaimer unsuitable for memorization as educational content.",
+    ]
+    for reason in chaff_reasons:
+        assert overflow_bucket(reason) == "trimmed", f"expected trimmed for: {reason!r}"
+
+
+def test_overflow_bucket_chaff_signal_beats_llm_exceeds_rationalization() -> None:
+    """The LLM frequently rationalizes a bibliographic-chunk overflow with
+    budget language ("exceeds field capacity", "requires multiple metadata
+    fields") — but the content itself is still chaff. Chaff signals beat the
+    generic 'exceed' substantive signal. The opposite ordering ate the wrong
+    bucket on the Cell octopus PDF (2026-06-08) where bibliographic chunks
+    leaked into qa.
+
+    Note: the *classifier*-emitted `exceeds_budget:` prefix is still
+    unconditionally qa (it fires for real card content failing a shape budget,
+    never for chaff). The next test covers that."""
+    assert overflow_bucket(
+        "Bibliographic reference requires multiple metadata fields (authors, year, title, "
+        "journal, pages) that exceed single-field capacity of available shapes."
+    ) == "trimmed"
+    assert overflow_bucket(
+        "Citation with multiple authors and detailed publication metadata exceeds practical "
+        "flashcard scope; no single fact isolates well for memorization."
+    ) == "trimmed"
+
+
+def test_overflow_bucket_classifier_prefix_beats_chaff_signal() -> None:
+    """An `exceeds_budget:` prefix is classifier-emitted and ALWAYS routes to
+    qa, even if a chaff word appears later in the reason. The classifier only
+    emits this prefix when actual content failed a shape's budget — never for
+    citation metadata."""
+    assert overflow_bucket(
+        "exceeds_budget: Back is 250 chars, limit 200 (passage was a bibliographic reference)"
+    ) == "qa"
+
+
+def test_overflow_bucket_defaults_unknown_phrasings_to_qa() -> None:
+    """Unknown reasons keep content in qa. Better to over-keep and refine
+    `_CHAFF_SIGNALS` later than to silently discard new phrasings."""
+    assert overflow_bucket("some entirely novel phrasing the LLM just invented") == "qa"
+    assert overflow_bucket("") == "qa"
+
+
+def test_write_queue_splits_overflow_between_qa_and_trimmed(tmp_path: Path) -> None:
+    """End-to-end split: mixed overflow batch routes each chunk to the right
+    file. Substantive overflows land in the qa file with their text; trimmed
+    chaff lands in the trimmed file. Cross-contamination is the regression
+    this test guards against."""
+    overflow = [
+        Overflow(
+            chunk=_chunk("This paragraph has multiple distinct facts and a 250-char back..."),
+            reason="exceeds_budget: Back is 250 chars, limit 200",
+        ),
+        Overflow(
+            chunk=_chunk("Smith J, Jones K. (2026) On the mitochondrion. Cell 123: 456-789."),
+            reason="Bibliographic reference is metadata, not a learnable fact.",
+        ),
+        Overflow(
+            chunk=_chunk("### Introduction"),
+            reason="Passage is a section header with no substantive content to convert into a flashcard.",
+        ),
+        Overflow(
+            chunk=_chunk("Some interesting paragraph that didn't fit a Cloze."),
+            reason="Passage holds multiple distinct facts.",
+        ),
+    ]
+    _, qa_path, trimmed_path = write_queue(
+        tagged=[],
+        overflow=overflow,
+        deck="Reading",
+        slug="cells",
+        queue_dir=tmp_path / "queue",
+        qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
+        ingestion_date=date(2026, 5, 27),
+    )
+
+    qa_body = qa_path.read_text()
+    trimmed_body = trimmed_path.read_text()
+
+    # Substantive overflows in qa only.
+    assert "Back is 250 chars" in qa_body
+    assert "multiple distinct facts" in qa_body
+    assert "This paragraph has multiple" in qa_body
+    assert "Some interesting paragraph" in qa_body
+
+    # Chaff in trimmed only.
+    assert "Smith J, Jones K." in trimmed_body
+    assert "Bibliographic reference" in trimmed_body
+    assert "Introduction" in trimmed_body
+    assert "section header" in trimmed_body
+
+    # No leakage.
+    assert "Smith J, Jones K." not in qa_body
+    assert "Introduction" not in qa_body
+    assert "Back is 250 chars" not in trimmed_body
+    assert "This paragraph has multiple" not in trimmed_body
+
+
+def test_trimmed_file_uses_trimmed_heading(tmp_path: Path) -> None:
+    """The trimmed file's H1 heading distinguishes it from the qa file at a
+    glance when both are open in an editor."""
+    overflow = [Overflow(chunk=_chunk("x"), reason="Passage is a section header with no factual content.")]
+    _, _, trimmed_path = write_queue(
+        tagged=[],
+        overflow=overflow,
+        deck="Reading",
+        slug="cells",
+        queue_dir=tmp_path / "queue",
+        qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
+        ingestion_date=date(2026, 5, 27),
+    )
+    body = trimmed_path.read_text()
+    assert "# Trimmed — cells" in body
+    assert "Q&A" not in body
+
+
+def test_trimmed_file_empty_still_written_with_placeholder(tmp_path: Path) -> None:
+    """Like the qa file, the trimmed file is always written for downstream
+    tooling consistency, even with an empty bucket."""
+    _, _, trimmed_path = write_queue(
+        tagged=[TaggedCandidate(_candidate(), tags=["t"])],
+        overflow=[],
+        deck="Reading",
+        slug="cells",
+        queue_dir=tmp_path / "queue",
+        qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
+        ingestion_date=date(2026, 5, 27),
+    )
+    assert trimmed_path.exists()
+    assert "No overflow chunks" in trimmed_path.read_text()
