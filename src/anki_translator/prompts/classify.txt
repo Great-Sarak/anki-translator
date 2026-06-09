@@ -10,6 +10,7 @@ Rules:
 - Field values must be derived from the passage. Do not invent or pad.
 - Keep field values as terse as possible — flashcards work best when one fact lives on one card.
 - For cloze shapes: deletions go in {{{{c1::word}}}} {{{{c2::other word}}}} form — double braces on each side, every deletion. Cloze deletions should be the key concepts to memorize.
+- For markdown tables with a single value column (one lookup column, one fact column), prefer a cloze shape with row-as-cloze: one line per row, with the value cloze-deleted given the lookup column. Each row's value still must fit the cloze deletion_max_words budget; if any row's value exceeds it, choose "overflow" instead. Tables with multiple value columns do not fit any current shape — choose "overflow".
 - Source and Position fields will be filled by the caller, not by you. Do not output them.
 
 Respond with JSON only. No prose, no markdown fence, no commentary.

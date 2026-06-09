@@ -502,3 +502,87 @@ def test_resolve_concurrency_ignores_zero_or_negative_env(monkeypatch: pytest.Mo
     assert resolve_concurrency() == 9
     monkeypatch.setenv("ANKI_TRANSLATOR_CONCURRENCY", "-1")
     assert resolve_concurrency() == 9
+
+
+# ---- single-value-column table → row-as-cloze convention (#51) ----
+
+
+USB_THROUGHPUT_TABLE_TEXT = (
+    "**Throughput sanity test:** plug a known-good USB 3.x NVMe enclosure and run a sequential read.\n"
+    "\n"
+    "| Negotiated link | Expected sequential read |\n"
+    "|---|---|\n"
+    "| USB 2.0 (480 Mbps) | ~40 MB/s |\n"
+    "| USB 3.0 / 3.2 Gen 1 (5 Gbps) | ~400–450 MB/s |\n"
+    "| USB 3.2 Gen 2 (10 Gbps) | ~800–1000 MB/s |\n"
+    "| USB 3.2 Gen 2×2 / USB4 (20+ Gbps) | multi-GB/s |\n"
+)
+
+
+def test_build_prompt_includes_table_handling_rule(shapes: dict, chunk: Chunk) -> None:
+    """For #51: the prompt must teach the model to reach for AT Cloze (row-as-cloze)
+    on single-value-column markdown tables instead of overflowing."""
+    prompt = build_prompt(chunk, shapes)
+    lowered = prompt.lower()
+    assert "row-as-cloze" in lowered or "row as cloze" in lowered
+    assert "table" in lowered
+
+
+def test_classify_accepts_row_as_cloze_for_single_value_table(shapes: dict) -> None:
+    """Pinning test for #51: when the LLM emits an AT Cloze with one row-as-cloze
+    deletion per table row (each value within deletion_max_words=5), the classifier
+    accepts it as a single CardCandidate covering the whole table."""
+    table_chunk = Chunk(
+        text=USB_THROUGHPUT_TABLE_TEXT,
+        source="2026-05-30-cable-identification-and-testing",
+        position="#1-4-software-introspection",
+        source_type="manual",
+        metadata={},
+    )
+    stub = _stub(json.dumps({
+        "choice": "AT Cloze",
+        "fields": {
+            "Text": (
+                "USB throughput by negotiated link: "
+                "USB 2.0 (480 Mbps) → {{c1::~40 MB/s}}; "
+                "USB 3.0 / 3.2 Gen 1 (5 Gbps) → {{c2::~400–450 MB/s}}; "
+                "USB 3.2 Gen 2 (10 Gbps) → {{c3::~800–1000 MB/s}}; "
+                "USB 3.2 Gen 2×2 / USB4 (20+ Gbps) → {{c4::multi-GB/s}}."
+            ),
+        },
+    }))
+    result = classify(table_chunk, shapes, llm=stub)
+    assert isinstance(result, CardCandidate), result
+    assert result.note_type == "AT Cloze"
+    # All four rows survived as separate cloze deletions.
+    text = result.fields["Text"]
+    for tag in ("{{c1::", "{{c2::", "{{c3::", "{{c4::"):
+        assert tag in text
+
+
+def test_classify_overflows_row_as_cloze_when_a_row_value_exceeds_budget(shapes: dict) -> None:
+    """The row-as-cloze convention must not soften the deletion_max_words cutoff:
+    if any row's value is too long, the chunk still routes to overflow rather
+    than silently shipping an over-budget card."""
+    table_chunk = Chunk(
+        text=USB_THROUGHPUT_TABLE_TEXT,
+        source="2026-05-30-cable-identification-and-testing",
+        position="#1-4-software-introspection",
+        source_type="manual",
+        metadata={},
+    )
+    # Sixth deletion is 6 words → exceeds deletion_max_words=5.
+    stub = _stub(json.dumps({
+        "choice": "AT Cloze",
+        "fields": {
+            "Text": (
+                "USB throughput: "
+                "USB 2.0 → {{c1::~40 MB/s}}; "
+                "USB 3.0 → {{c2::~400–450 MB/s}}; "
+                "USB 3.2 Gen 2 → {{c3::roughly eight hundred to one thousand}}."
+            ),
+        },
+    }))
+    result = classify(table_chunk, shapes, llm=stub)
+    assert isinstance(result, Overflow), result
+    assert "exceeds_budget" in result.reason
