@@ -2,7 +2,9 @@
 
 For pasted notes, transcripts, hand-written content — anything without a stable URL or
 filename to cite. The user supplies a readable label (e.g. "chat 2026-05-27") that becomes
-the Source value. Position is always empty for manual sources by design.
+the Source value. Position is empty for raw text and .txt sources; for .md sources, each
+chunk's Position is `#<heading-slug>` of the H2/H3 heading the chunk lives under (parity
+with the URL extractor's anchor positions).
 """
 
 from __future__ import annotations
@@ -18,6 +20,25 @@ from . import ExtractionError
 FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", re.DOTALL)
 # Markdown headings (## or ###) split the body into chunks.
 MD_HEADING_SPLIT_RE = re.compile(r"^#{2,3}\s+.*$", re.MULTILINE)
+# Capture the visible text of a heading line, stripping the leading `#`s and any
+# trailing `#`s used by the closed-form heading style.
+_HEADING_TEXT_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
+_SLUG_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slugify_heading(line: str) -> str:
+    """Lowercase, collapse non-alphanumeric runs to hyphens, strip trim hyphens.
+
+    Pragmatic ASCII slugifier — the resulting Position is human-grep bait for
+    locating a card's origin in the source `.md`, not an HTML id. Headings that
+    contain only non-alphanumeric characters (rare) produce an empty slug, which
+    the caller treats the same as "no preceding heading".
+    """
+    match = _HEADING_TEXT_RE.match(line.strip())
+    if not match:
+        return ""
+    text = match.group(1)
+    return _SLUG_SEPARATOR_RE.sub("-", text.lower()).strip("-")
 
 
 def _default_label() -> str:
@@ -71,25 +92,26 @@ def extract_file(path: Path | str, label: str | None = None) -> list[Chunk]:
         sections = MD_HEADING_SPLIT_RE.split(body)
         # Re-stitch: pair each heading with its content if present
         heads = MD_HEADING_SPLIT_RE.findall(body)
-        parts: list[str] = []
-        # Preamble (before first heading) — keep if non-empty
+        # (text, slug) pairs — slug is empty for the preamble (content before the
+        # first heading), per #47 acceptance.
+        parts: list[tuple[str, str]] = []
         if sections and sections[0].strip():
-            parts.append(sections[0].strip())
+            parts.append((sections[0].strip(), ""))
         for head, section in zip(heads, sections[1:]):
             chunk_text = f"{head.strip()}\n\n{section.strip()}".strip()
             if chunk_text:
-                parts.append(chunk_text)
+                parts.append((chunk_text, _slugify_heading(head)))
         if not parts:
             raise ExtractionError(f"manual extractor: no content after frontmatter/heading split in {p}")
         return [
             Chunk(
-                text=part,
+                text=part_text,
                 source=effective_label,
-                position="",
+                position=f"#{slug}" if slug else "",
                 source_type="manual",
-                metadata={"label": effective_label},
+                metadata={"label": effective_label, "anchor": slug},
             )
-            for part in parts
+            for part_text, slug in parts
         ]
 
     # Plain text / .txt fallthrough
