@@ -70,13 +70,25 @@ class CardCandidate:
 
 
 @dataclass(frozen=True)
+class MultiCardCandidate:
+    """A passage that produces multiple CardCandidates from one classification call.
+
+    Used by the term-table shape: a reference table with M value columns and N rows
+    yields N rows × M attribute templates = N×M cards from a single chunk. Callers
+    that consume Classification must flatten MultiCardCandidate into its `rows` list
+    of CardCandidates before downstream tagging / queue writing.
+    """
+    rows: tuple[CardCandidate, ...]
+
+
+@dataclass(frozen=True)
 class Overflow:
     """A passage that does not fit any shape's budget — routed to the qa/ markdown bucket."""
     chunk: Chunk
     reason: str  # one of: 'no_shape_fit', 'exceeds_budget', 'llm_error', 'invalid_response'
 
 
-Classification = Union[CardCandidate, Overflow]
+Classification = Union[CardCandidate, MultiCardCandidate, Overflow]
 
 
 def _load_prompt_template() -> str:
@@ -94,12 +106,23 @@ def _shapes_block(shapes: dict[str, ShapeConfig]) -> str:
     """
     lines: list[str] = []
     for name, cfg in shapes.items():
+        cutoffs_str = ", ".join(f"{k}={v}" for k, v in cfg.cutoffs.items()) or "(no budget)"
+        if cfg.shape == "term-table":
+            # term-table flattens attribute slots into many flat Anki fields
+            # (Attr1Name, Attr1Value, ...). Listing them all confuses the LLM
+            # about the response shape — it should be returning `rows`+`attrs`,
+            # not filling flat fields. Surface the conceptual model instead.
+            attr_slots = sum(1 for role in cfg.fields if role.startswith("attr") and role.endswith("_value"))
+            lines.append(
+                f"- \"{name}\" (shape={cfg.shape}): one lookup key per row + up to {attr_slots} attribute pairs; "
+                f"budget: {cutoffs_str}"
+            )
+            continue
         visible_fields = [
             field_name
             for role, field_name in cfg.fields.items()
             if role not in {"source", "position"}
         ]
-        cutoffs_str = ", ".join(f"{k}={v}" for k, v in cfg.cutoffs.items()) or "(no budget)"
         lines.append(
             f"- \"{name}\" (shape={cfg.shape}): fields {', '.join(visible_fields)}; budget: {cutoffs_str}"
         )
@@ -176,6 +199,13 @@ def classify(
         return Overflow(chunk=chunk, reason=f"invalid_response: unknown note type {choice!r}")
 
     shape_cfg = shapes[choice]
+
+    # term-table is the only shape that returns >1 card per chunk. It uses a
+    # different LLM response shape — `rows` instead of `fields` — and gets
+    # expanded here into a MultiCardCandidate.
+    if shape_cfg.shape == "term-table":
+        return _classify_term_table(chunk, choice, shape_cfg, parsed)
+
     fields = parsed.get("fields")
     if not isinstance(fields, dict):
         return Overflow(chunk=chunk, reason="invalid_response: missing or non-dict 'fields'")
@@ -214,6 +244,94 @@ def classify(
         fields=fields,
         chunk=chunk,
     )
+
+
+def _classify_term_table(
+    chunk: Chunk,
+    note_type: str,
+    shape_cfg: ShapeConfig,
+    parsed: dict,
+) -> Classification:
+    """Expand a term-table LLM response into one CardCandidate per row.
+
+    Expected response shape:
+        {"choice": "AT Table",
+         "rows": [
+            {"key": "DP 1.2",
+             "attrs": [{"name": "Link rate", "value": "HBR2"}, ...]},
+            ...
+         ]}
+
+    Each row becomes one CardCandidate populating Key + AttrN/AttrNValue slots.
+    Anki's conditional templates emit one card per non-empty AttrNName slot, so a
+    row with M attributes yields M cards at note creation. Unused slots stay empty.
+
+    Cutoffs enforced here:
+        row_max_attrs   — reject any row with too many attributes (hard upper bound).
+        attr_max_chars  — reject if any attribute name or value exceeds the limit.
+    """
+    rows = parsed.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return Overflow(chunk=chunk, reason="invalid_response: missing or empty 'rows'")
+
+    row_max_attrs = shape_cfg.cutoffs.get("row_max_attrs", 4)
+    attr_max_chars = shape_cfg.cutoffs.get("attr_max_chars", 80)
+    candidates: list[CardCandidate] = []
+
+    for row_idx, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            return Overflow(chunk=chunk, reason=f"invalid_response: row {row_idx} is not an object")
+        key = row.get("key")
+        attrs = row.get("attrs")
+        if not isinstance(key, str) or not key.strip():
+            return Overflow(chunk=chunk, reason=f"invalid_response: row {row_idx} missing 'key'")
+        if not isinstance(attrs, list) or not attrs:
+            return Overflow(chunk=chunk, reason=f"invalid_response: row {row_idx} missing 'attrs'")
+        if len(attrs) > row_max_attrs:
+            return Overflow(
+                chunk=chunk,
+                reason=f"exceeds_budget: row {row_idx} has {len(attrs)} attrs, limit {row_max_attrs}",
+            )
+
+        fields: dict[str, str] = {shape_cfg.fields["key"]: key.strip()}
+        for attr_idx, attr in enumerate(attrs, start=1):
+            if not isinstance(attr, dict):
+                return Overflow(chunk=chunk, reason=f"invalid_response: row {row_idx} attr {attr_idx} is not an object")
+            name = attr.get("name")
+            value = attr.get("value")
+            if not isinstance(name, str) or not isinstance(value, str):
+                return Overflow(
+                    chunk=chunk,
+                    reason=f"invalid_response: row {row_idx} attr {attr_idx} missing 'name'/'value'",
+                )
+            if len(name) > attr_max_chars:
+                return Overflow(
+                    chunk=chunk,
+                    reason=f"exceeds_budget: row {row_idx} attr {attr_idx} name is {len(name)} chars, limit {attr_max_chars}",
+                )
+            if len(value) > attr_max_chars:
+                return Overflow(
+                    chunk=chunk,
+                    reason=f"exceeds_budget: row {row_idx} attr {attr_idx} value is {len(value)} chars, limit {attr_max_chars}",
+                )
+            name_role = f"attr{attr_idx}_name"
+            value_role = f"attr{attr_idx}_value"
+            if name_role not in shape_cfg.fields or value_role not in shape_cfg.fields:
+                return Overflow(
+                    chunk=chunk,
+                    reason=f"invalid_response: shape has no slot for attr {attr_idx}",
+                )
+            fields[shape_cfg.fields[name_role]] = name
+            fields[shape_cfg.fields[value_role]] = value
+
+        candidates.append(CardCandidate(
+            note_type=note_type,
+            shape=shape_cfg.shape,
+            fields=fields,
+            chunk=chunk,
+        ))
+
+    return MultiCardCandidate(rows=tuple(candidates))
 
 
 def classify_chunks(

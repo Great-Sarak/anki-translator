@@ -72,6 +72,47 @@ STARTER_MODELS: list[dict[str, Any]] = [
             },
         ],
     },
+    {
+        # Multi-attribute row card. One row of a reference table is one note;
+        # each non-empty attribute slot generates a separate card via Anki's
+        # conditional template syntax ({{#FieldName}}...{{/FieldName}}). A row
+        # with three populated attribute slots yields three cards: front asks
+        # `Key (AttrNName)`, back shows the full row + citation. Slots cap at 4
+        # because most reference tables (DisplayPort versions, HDMI, USB) sit
+        # at 2–3 value columns and 8 felt too large for card-sized review.
+        "modelName": "AT Table",
+        "inOrderFields": [
+            "Key",
+            "Attr1Name", "Attr1Value",
+            "Attr2Name", "Attr2Value",
+            "Attr3Name", "Attr3Value",
+            "Attr4Name", "Attr4Value",
+            "Source", "Position",
+        ],
+        "isCloze": False,
+        "cardTemplates": [
+            {
+                "Name": f"Key→Attr{i}",
+                "Front": (
+                    "{{#Attr" + str(i) + "Name}}"
+                    "{{Key}} ({{Attr" + str(i) + "Name}})"
+                    "{{/Attr" + str(i) + "Name}}"
+                ),
+                "Back": (
+                    "{{FrontSide}}<hr id=answer>"
+                    "{{Attr" + str(i) + "Value}}<br><br>"
+                    "<small>"
+                    "{{#Attr1Name}}{{Attr1Name}}: {{Attr1Value}}<br>{{/Attr1Name}}"
+                    "{{#Attr2Name}}{{Attr2Name}}: {{Attr2Value}}<br>{{/Attr2Name}}"
+                    "{{#Attr3Name}}{{Attr3Name}}: {{Attr3Value}}<br>{{/Attr3Name}}"
+                    "{{#Attr4Name}}{{Attr4Name}}: {{Attr4Value}}<br>{{/Attr4Name}}"
+                    "{{Source}} {{Position}}"
+                    "</small>"
+                ),
+            }
+            for i in (1, 2, 3, 4)
+        ],
+    },
 ]
 
 

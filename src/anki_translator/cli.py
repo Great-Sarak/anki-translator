@@ -92,6 +92,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     for result in classifier.classify_chunks(chunks, shapes):
         if isinstance(result, classifier.CardCandidate):
             candidates.append(result)
+        elif isinstance(result, classifier.MultiCardCandidate):
+            candidates.extend(result.rows)
         else:
             overflow.append(result)
 

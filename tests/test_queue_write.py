@@ -250,3 +250,53 @@ def test_queue_file_multiline_field_inlined(tmp_path: Path) -> None:
     )
     body = queue_path.read_text()
     assert "**Back:** line one line two line three" in body
+
+
+def test_queue_file_renders_term_table_row_as_separate_block(tmp_path: Path) -> None:
+    """For #52: each row of a term-table chunk is a CardCandidate after the cli
+    flattens MultiCardCandidate. Each lands as its own `## Card N — term-table`
+    block, preserving per-row delete semantics during review. The natural
+    ordering of classify_chunks keeps same-source rows adjacent in the queue
+    file — that's the 'grouped' behavior, without breaking the parser's
+    one-block-per-card split."""
+    rows = [
+        _candidate(
+            note_type="AT Table",
+            shape="term-table",
+            fields={
+                "Key": "DP 1.2",
+                "Attr1Name": "Link rate", "Attr1Value": "HBR2",
+                "Attr2Name": "Total bandwidth", "Attr2Value": "21.6 Gbps",
+                "Attr3Name": "Top resolution", "Attr3Value": "4K@60",
+            },
+        ),
+        _candidate(
+            note_type="AT Table",
+            shape="term-table",
+            fields={
+                "Key": "DP 1.4",
+                "Attr1Name": "Link rate", "Attr1Value": "HBR3",
+                "Attr2Name": "Total bandwidth", "Attr2Value": "25.92 Gbps",
+                "Attr3Name": "Top resolution", "Attr3Value": "8K@60",
+            },
+        ),
+    ]
+    queue_path, _qa_path = write_queue(
+        tagged=[TaggedCandidate(c, tags=["video::displayport"]) for c in rows],
+        overflow=[],
+        deck="Myrzka::Cables",
+        slug="dp",
+        queue_dir=tmp_path / "queue",
+        qa_dir=tmp_path / "qa",
+    )
+    body = queue_path.read_text()
+    # Two blocks, one per row, in order.
+    assert body.count("## Card") == 2
+    assert body.index("DP 1.2") < body.index("DP 1.4")
+    # Per-row block contains the row's full attribute set so the reviewer can
+    # judge it without re-reading the source.
+    assert "**Key:** DP 1.2" in body
+    assert "**Attr1Name:** Link rate" in body
+    assert "**Attr1Value:** HBR2" in body
+    assert "**Attr3Value:** 4K@60" in body
+    assert "**Model:** AT Table" in body
