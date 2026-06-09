@@ -211,6 +211,20 @@ def test_classify_handles_missing_choice(shapes: dict, chunk: Chunk) -> None:
     assert "missing 'choice'" in result.reason
 
 
+def test_classify_handles_array_response(shapes: dict, chunk: Chunk) -> None:
+    """Pin for #48: haiku-4-5 sometimes returns a JSON array of multiple cards
+    for chunks holding multiple distinct facts (multi-table markdown sections,
+    multi-bullet structures). The classifier must surface this as a specific
+    overflow reason instead of the misleading "missing 'choice'" message."""
+    stub = _stub(json.dumps([
+        {"choice": "AT Basic", "fields": {"Front": "a", "Back": "b"}},
+        {"choice": "AT Basic", "fields": {"Front": "c", "Back": "d"}},
+    ]))
+    result = classify(chunk, shapes, llm=stub)
+    assert isinstance(result, Overflow)
+    assert "array" in result.reason
+
+
 def test_classify_handles_unknown_note_type(shapes: dict, chunk: Chunk) -> None:
     stub = _stub(json.dumps({"choice": "Phantom Type", "fields": {}}))
     result = classify(chunk, shapes, llm=stub)
