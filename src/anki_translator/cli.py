@@ -18,7 +18,10 @@ from .extractors import ExtractionError
 from .extractors.manual import extract_file as manual_extract_file
 from .extractors.manual import extract_text as manual_extract_text
 from .extractors.pdf import extract as pdf_extract
+from .extractors.pdf import extract_bytes as pdf_extract_bytes
+from .extractors.url import extract as url_extract_html
 from .extractors.url import extract_url
+from .extractors.url import fetch_bytes as url_fetch_bytes
 from .queue import (
     TaggedCandidate,
     commit_queue,
@@ -145,7 +148,10 @@ def _dispatch_extractor(args: argparse.Namespace) -> list:
         return manual_extract_text(args.text, label=args.label)
     src = args.source
     if src.startswith(("http://", "https://")):
-        return extract_url(src)
+        body, content_type = url_fetch_bytes(src)
+        if content_type == "application/pdf" or body[:5] == b"%PDF-":
+            return pdf_extract_bytes(body, src)
+        return url_extract_html(body.decode("utf-8", errors="replace"), src)
     p = Path(src)
     if p.suffix.lower() == ".pdf":
         return pdf_extract(p)

@@ -12,7 +12,7 @@ import pymupdf
 import pytest
 
 from anki_translator.extractors import ExtractionError
-from anki_translator.extractors.pdf import MIN_CHUNK_CHARS, extract
+from anki_translator.extractors.pdf import MIN_CHUNK_CHARS, extract, extract_bytes
 
 
 @pytest.fixture
@@ -118,3 +118,44 @@ def test_chunk_text_meets_min_length(sample_pdf: Path) -> None:
     chunks = extract(sample_pdf)
     for c in chunks:
         assert len(c.text) >= MIN_CHUNK_CHARS
+
+
+# ---- extract_bytes ----
+
+
+@pytest.fixture
+def sample_pdf_bytes(sample_pdf: Path) -> bytes:
+    return sample_pdf.read_bytes()
+
+
+def test_extract_bytes_produces_same_chunks_as_extract(sample_pdf: Path, sample_pdf_bytes: bytes) -> None:
+    from_file = extract(sample_pdf)
+    from_bytes = extract_bytes(sample_pdf_bytes, "sample.pdf")
+    assert len(from_file) == len(from_bytes)
+    for a, b in zip(from_file, from_bytes):
+        assert a.text == b.text
+        assert a.position == b.position
+        assert a.source_type == b.source_type
+
+
+def test_extract_bytes_uses_source_label(sample_pdf_bytes: bytes) -> None:
+    label = "https://example.com/paper.pdf"
+    chunks = extract_bytes(sample_pdf_bytes, label)
+    for c in chunks:
+        assert c.source == label
+        assert c.metadata["filename"] == label
+
+
+def test_extract_bytes_raises_on_non_pdf() -> None:
+    with pytest.raises(ExtractionError, match="could not open"):
+        extract_bytes(b"this is not pdf data", "fake.pdf")
+
+
+def test_extract_bytes_raises_on_empty_pdf() -> None:
+    """An in-memory PDF with no text should raise the image-only error."""
+    doc = pymupdf.open()
+    doc.new_page()
+    buf = doc.tobytes()
+    doc.close()
+    with pytest.raises(ExtractionError, match="image-only"):
+        extract_bytes(buf, "blank.pdf")

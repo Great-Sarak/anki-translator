@@ -20,6 +20,31 @@ from . import ExtractionError
 MIN_CHUNK_CHARS = 30
 
 
+def _extract_doc(doc: pymupdf.Document, source_label: str) -> list[Chunk]:
+    """Walk an open pymupdf Document and return Chunks. Caller owns doc lifetime."""
+    chunks: list[Chunk] = []
+    for page_num, page in enumerate(doc, start=1):
+        blocks = page.get_text("blocks")
+        # blocks is a list of (x0, y0, x1, y1, text, block_no, block_type)
+        for block in blocks:
+            # block_type == 1 is image; we want text only (type 0)
+            if len(block) < 7 or block[6] != 0:
+                continue
+            text = block[4].strip()
+            if len(text) < MIN_CHUNK_CHARS:
+                continue
+            chunks.append(
+                Chunk(
+                    text=text,
+                    source=source_label,
+                    position=f"page {page_num}",
+                    source_type="pdf",
+                    metadata={"filename": source_label, "page": page_num},
+                )
+            )
+    return chunks
+
+
 def extract(path: Path | str) -> list[Chunk]:
     """Extract chunks from a PDF file.
 
@@ -40,33 +65,39 @@ def extract(path: Path | str) -> list[Chunk]:
         doc.close()
         raise ExtractionError(f"PDF is encrypted, cannot extract: {p}")
 
-    filename = p.name
-    chunks: list[Chunk] = []
     try:
-        for page_num, page in enumerate(doc, start=1):
-            blocks = page.get_text("blocks")
-            # blocks is a list of (x0, y0, x1, y1, text, block_no, block_type)
-            for block in blocks:
-                # block_type == 1 is image; we want text only (type 0)
-                if len(block) < 7 or block[6] != 0:
-                    continue
-                text = block[4].strip()
-                if len(text) < MIN_CHUNK_CHARS:
-                    continue
-                chunks.append(
-                    Chunk(
-                        text=text,
-                        source=filename,
-                        position=f"page {page_num}",
-                        source_type="pdf",
-                        metadata={"filename": filename, "page": page_num},
-                    )
-                )
+        chunks = _extract_doc(doc, p.name)
     finally:
         doc.close()
 
     if not chunks:
         raise ExtractionError(
             f"no text blocks extracted from {p} — PDF may be image-only (scanned without OCR)"
+        )
+    return chunks
+
+
+def extract_bytes(data: bytes, source_label: str) -> list[Chunk]:
+    """Extract chunks from raw PDF bytes (e.g. fetched from a URL).
+
+    source_label is used as the Source field (typically the URL or a filename).
+    """
+    try:
+        doc = pymupdf.open(stream=data, filetype="pdf")
+    except Exception as e:
+        raise ExtractionError(f"could not open PDF from bytes [{source_label}]: {e}") from e
+
+    if doc.is_encrypted:
+        doc.close()
+        raise ExtractionError(f"PDF is encrypted, cannot extract: {source_label}")
+
+    try:
+        chunks = _extract_doc(doc, source_label)
+    finally:
+        doc.close()
+
+    if not chunks:
+        raise ExtractionError(
+            f"no text blocks extracted from {source_label} — PDF may be image-only (scanned without OCR)"
         )
     return chunks

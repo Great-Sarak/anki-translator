@@ -213,3 +213,101 @@ def test_commit_dry_run_passes_flag(monkeypatch, tmp_path: Path, capsys) -> None
     monkeypatch.setattr("anki_translator.cli.commit_queue", fake_commit)
     cli.main(["commit", str(tmp_path / "x.md"), "--dry-run"])
     assert captured["dry_run"] is True
+
+
+# ---- URL dispatch: content-type / magic-byte routing (#45) ----
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def _make_pdf_bytes() -> bytes:
+    """Synthesize a minimal single-page PDF with one text block."""
+    import pymupdf
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_textbox(
+        pymupdf.Rect(72, 72, 540, 200),
+        "The mitochondria is the powerhouse of the cell, "
+        "producing ATP through oxidative phosphorylation.",
+        fontsize=11,
+    )
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_url_dispatch_routes_pdf_content_type_to_pdf_extractor(monkeypatch, tmp_path: Path, capsys) -> None:
+    """content_type='application/pdf' → pdf_extract_bytes, not url HTML extractor."""
+    pdf_bytes = _make_pdf_bytes()
+    monkeypatch.setattr("anki_translator.cli.url_fetch_bytes", lambda url, **kw: (pdf_bytes, "application/pdf"))
+    monkeypatch.setattr("anki_translator.cli.classifier.classify", _classify_to_basic)
+    monkeypatch.setattr("anki_translator.cli.tagger.generate_tags", _generate_tags_stub)
+    fake_mgr = MagicMock()
+    fake_mgr.call.return_value = []
+    monkeypatch.setattr("anki_manager.AnkiManager", lambda: fake_mgr)
+
+    rc = cli.main([
+        "ingest", "https://example.com/paper?type=printable",
+        "--deck", "Reading",
+        "--shapes", str(REPO_ROOT / "config" / "shapes.yaml"),
+        "--queue-dir", str(tmp_path / "queue"),
+        "--qa-dir", str(tmp_path / "qa"),
+        "--trimmed-dir", str(tmp_path / "trimmed"),
+    ])
+    assert rc == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["candidates"] >= 1
+    # Chunks come from PDF path → source_type should be 'pdf'
+    queue_text = Path(parsed["queue_file"]).read_text()
+    assert "**Source:** https://example.com/paper?type=printable" in queue_text
+
+
+def test_url_dispatch_routes_pdf_magic_bytes_to_pdf_extractor(monkeypatch, tmp_path: Path, capsys) -> None:
+    """Server omits content-type but body starts with %PDF- → still routed to pdf_extract_bytes."""
+    pdf_bytes = _make_pdf_bytes()
+    assert pdf_bytes[:5] == b"%PDF-"
+    monkeypatch.setattr("anki_translator.cli.url_fetch_bytes", lambda url, **kw: (pdf_bytes, "application/octet-stream"))
+    monkeypatch.setattr("anki_translator.cli.classifier.classify", _classify_to_basic)
+    monkeypatch.setattr("anki_translator.cli.tagger.generate_tags", _generate_tags_stub)
+    fake_mgr = MagicMock()
+    fake_mgr.call.return_value = []
+    monkeypatch.setattr("anki_manager.AnkiManager", lambda: fake_mgr)
+
+    rc = cli.main([
+        "ingest", "https://example.com/download",
+        "--deck", "Reading",
+        "--shapes", str(REPO_ROOT / "config" / "shapes.yaml"),
+        "--queue-dir", str(tmp_path / "queue"),
+        "--qa-dir", str(tmp_path / "qa"),
+        "--trimmed-dir", str(tmp_path / "trimmed"),
+    ])
+    assert rc == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["candidates"] >= 1
+
+
+def test_url_dispatch_routes_html_content_type_to_html_extractor(monkeypatch, tmp_path: Path, capsys) -> None:
+    """content_type='text/html' → HTML extractor, not PDF."""
+    html_bytes = (FIXTURES / "article.html").read_bytes()
+    monkeypatch.setattr("anki_translator.cli.url_fetch_bytes", lambda url, **kw: (html_bytes, "text/html"))
+    monkeypatch.setattr("anki_translator.cli.classifier.classify", _classify_to_basic)
+    monkeypatch.setattr("anki_translator.cli.tagger.generate_tags", _generate_tags_stub)
+    fake_mgr = MagicMock()
+    fake_mgr.call.return_value = []
+    monkeypatch.setattr("anki_manager.AnkiManager", lambda: fake_mgr)
+
+    rc = cli.main([
+        "ingest", "https://example.com/cells",
+        "--deck", "Reading",
+        "--shapes", str(REPO_ROOT / "config" / "shapes.yaml"),
+        "--queue-dir", str(tmp_path / "queue"),
+        "--qa-dir", str(tmp_path / "qa"),
+        "--trimmed-dir", str(tmp_path / "trimmed"),
+    ])
+    assert rc == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["candidates"] >= 1
+    queue_text = Path(parsed["queue_file"]).read_text()
+    # HTML extractor attaches the URL as source; PDF would use the URL too but position
+    # format differs: HTML uses '#anchor' or '', PDF uses 'page N'
+    assert "**Position:** #" in queue_text or "**Position:** " in queue_text

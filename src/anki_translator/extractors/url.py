@@ -9,21 +9,44 @@ standard boilerplate tags (nav, header, footer, aside, script, style, form), acc
 
 from __future__ import annotations
 
+import urllib.error
+import urllib.request
 from html.parser import HTMLParser
 from typing import Optional
-
-import trafilatura
 
 from ..chunk import Chunk
 from . import ExtractionError
 
+_DEFAULT_USER_AGENT = "anki-translator/0.1 (+https://github.com/Great-Sarak/anki-translator)"
+
+
+def fetch_bytes(url: str, *, timeout: float = 30.0) -> tuple[bytes, str]:
+    """Fetch a URL and return (body_bytes, content_type).
+
+    Uses urllib.request (stdlib) rather than trafilatura's fetcher so the
+    caller can inspect the Content-Type header — needed by the CLI dispatcher
+    to route PDF-serving URLs (e.g. PLOS One's `?type=printable` endpoint) to
+    the PDF extractor instead of the HTML extractor. See #45.
+
+    `content_type` is the bare media type (e.g. "application/pdf",
+    "text/html") with charset stripped; empty string if the server omitted
+    the header.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": _DEFAULT_USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            content_type = resp.headers.get_content_type() or ""
+            body = resp.read()
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise ExtractionError(f"could not fetch {url}: {e}") from e
+    return body, content_type
+
 
 def fetch(url: str) -> str:
-    """Fetch HTML from a URL. Separated from extract() so tests can pass canned HTML."""
-    downloaded = trafilatura.fetch_url(url)
-    if downloaded is None:
-        raise ExtractionError(f"could not fetch {url}")
-    return downloaded
+    """Fetch URL as HTML text. Convenience wrapper around fetch_bytes for
+    callers that know they want HTML (e.g. tests that pass canned HTML)."""
+    body, _ = fetch_bytes(url)
+    return body.decode("utf-8", errors="replace")
 
 
 def extract(html: str, url: str) -> list[Chunk]:
