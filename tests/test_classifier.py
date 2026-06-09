@@ -588,11 +588,14 @@ def test_classify_term_table_expands_rows_to_multi_card_candidate(shapes: dict) 
     assert "Attr4Value" not in first.fields
 
 
-def test_classify_term_table_overflows_when_row_exceeds_row_max_attrs(shapes: dict) -> None:
-    """Five attrs in one row exceeds the row_max_attrs=4 cutoff → overflow.
-    Important: the cutoff is enforced post-LLM, the same way every other shape's
-    cutoff is, because the LLM may self-report compliance without actually
-    complying."""
+def test_classify_term_table_overflows_when_row_exceeds_attrs_per_row_max(shapes: dict) -> None:
+    """Five attrs in one row exceeds the attrs_per_row_max=4 cutoff → overflow.
+    The cutoff is enforced post-LLM, the same way every other shape's cutoff is,
+    because the LLM may self-report compliance without actually complying.
+
+    The reason string says 'per-row limit' so it's clear the cap is per-row, not
+    a cap on the total row count (caps on row count don't exist — a term-table
+    response with 20 rows of 2 attrs each is fine)."""
     stub = _stub(json.dumps({
         "choice": "AT Table",
         "rows": [
@@ -609,6 +612,27 @@ def test_classify_term_table_overflows_when_row_exceeds_row_max_attrs(shapes: di
     assert isinstance(result, Overflow), result
     assert "exceeds_budget" in result.reason
     assert "5 attrs" in result.reason
+    assert "per-row" in result.reason
+
+
+def test_classify_term_table_accepts_many_rows_with_few_attrs(shapes: dict) -> None:
+    """attrs_per_row_max is per-row, not a cap on rows. A 20-row table with 2
+    attrs per row is well within budget and produces 20 CardCandidates. Pins
+    the per-row semantics against the LLM (or a future reader of the prompt)
+    misreading it as a row-count cap."""
+    stub = _stub(json.dumps({
+        "choice": "AT Table",
+        "rows": [
+            {"key": f"R{i}", "attrs": [
+                {"name": "Pick", "value": f"P{i}"},
+                {"name": "Cost", "value": f"$ {i*10}"},
+            ]}
+            for i in range(1, 21)  # 20 rows
+        ],
+    }))
+    result = classify(_table_chunk(), shapes, llm=stub)
+    assert isinstance(result, MultiCardCandidate), result
+    assert len(result.rows) == 20
 
 
 def test_classify_term_table_overflows_when_attr_value_too_long(shapes: dict) -> None:
@@ -664,6 +688,39 @@ def test_build_prompt_includes_term_table_response_shape(shapes: dict, chunk: Ch
     # AT Table shape gets the conceptual rendering, not the flat field list:
     assert "attribute pairs" in prompt
     assert "Attr1Name" not in prompt  # confusing flat names suppressed for term-table
+
+
+def test_build_prompt_clarifies_attrs_per_row_max_is_per_row(shapes: dict, chunk: Chunk) -> None:
+    """First live ingest after #52 landed showed the LLM reading the old name
+    `row_max_attrs=4` as a cap on row count (overflowing 7-row tables with the
+    reason 'exceeds row_max_attrs=4'). The renamed cutoff + per-row explainer
+    in the prompt must make it unambiguous that the cap is per-row, not
+    per-response. Pin both pieces so a future prompt rewrite doesn't silently
+    regress them."""
+    prompt = build_prompt(chunk, shapes)
+    assert "attrs_per_row_max" in prompt
+    # The conceptual rendering of AT Table calls out the per-row meaning
+    # explicitly so the cutoff name + line agree.
+    assert "PER ROW" in prompt
+    assert "row count is unbounded" in prompt
+    # And the standalone rule reinforces it for the LLM that skims cutoffs.
+    assert "PER-ROW cap" in prompt
+
+
+def test_build_prompt_prefers_term_table_for_tables_in_multi_fact_passages(
+    shapes: dict, chunk: Chunk
+) -> None:
+    """The merged-in #48 rule pushed the model toward 'pick one central fact +
+    overflow' for multi-fact passages, which caused the SAS-family table (a
+    clean term-table fit inside a chunk with other prose) to overflow as
+    'multiple distinct facts'. The rule must now carve out: if any of those
+    facts is a clean term-table fit, prefer term-table for that table."""
+    prompt = build_prompt(chunk, shapes)
+    # The old "pick one central fact + overflow" rule still exists but is now
+    # gated on "AND none of them is a reference table that fits term-table".
+    lowered = prompt.lower()
+    assert "term-table fit" in lowered
+    assert "prefer term-table" in lowered
 
 
 def test_classify_chunks_flattens_multi_card_into_results(shapes: dict) -> None:

@@ -114,7 +114,8 @@ def _shapes_block(shapes: dict[str, ShapeConfig]) -> str:
             # not filling flat fields. Surface the conceptual model instead.
             attr_slots = sum(1 for role in cfg.fields if role.startswith("attr") and role.endswith("_value"))
             lines.append(
-                f"- \"{name}\" (shape={cfg.shape}): one lookup key per row + up to {attr_slots} attribute pairs; "
+                f"- \"{name}\" (shape={cfg.shape}): one lookup key per row + up to {attr_slots} attribute pairs "
+                f"PER ROW (row count is unbounded — emit one entry in `rows` per source-table row); "
                 f"budget: {cutoffs_str}"
             )
             continue
@@ -267,14 +268,15 @@ def _classify_term_table(
     row with M attributes yields M cards at note creation. Unused slots stay empty.
 
     Cutoffs enforced here:
-        row_max_attrs   — reject any row with too many attributes (hard upper bound).
-        attr_max_chars  — reject if any attribute name or value exceeds the limit.
+        attrs_per_row_max  — reject any row with more attributes than the per-row cap
+                             (NOT a cap on the row count; row count is unbounded).
+        attr_max_chars     — reject if any attribute name or value exceeds the limit.
     """
     rows = parsed.get("rows")
     if not isinstance(rows, list) or not rows:
         return Overflow(chunk=chunk, reason="invalid_response: missing or empty 'rows'")
 
-    row_max_attrs = shape_cfg.cutoffs.get("row_max_attrs", 4)
+    attrs_per_row_max = shape_cfg.cutoffs.get("attrs_per_row_max", 4)
     attr_max_chars = shape_cfg.cutoffs.get("attr_max_chars", 80)
     candidates: list[CardCandidate] = []
 
@@ -287,10 +289,10 @@ def _classify_term_table(
             return Overflow(chunk=chunk, reason=f"invalid_response: row {row_idx} missing 'key'")
         if not isinstance(attrs, list) or not attrs:
             return Overflow(chunk=chunk, reason=f"invalid_response: row {row_idx} missing 'attrs'")
-        if len(attrs) > row_max_attrs:
+        if len(attrs) > attrs_per_row_max:
             return Overflow(
                 chunk=chunk,
-                reason=f"exceeds_budget: row {row_idx} has {len(attrs)} attrs, limit {row_max_attrs}",
+                reason=f"exceeds_budget: row {row_idx} has {len(attrs)} attrs, per-row limit {attrs_per_row_max}",
             )
 
         fields: dict[str, str] = {shape_cfg.fields["key"]: key.strip()}

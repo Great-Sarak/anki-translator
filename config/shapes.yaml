@@ -62,5 +62,5 @@
     source: Source
     position: Position
   cutoffs:
-    row_max_attrs: 4
+    attrs_per_row_max: 4
     attr_max_chars: 80
