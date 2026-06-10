@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "corpora": [
+    {
+      "name": "cable-identification",
+      "extractor": "manual",
+      "chunk_count": 5,
+      "dispatched_count": 5,
+      "prompt_token_chars": 16060,
+      "counts": {
+        "card": 2,
+        "qa": 0,
+        "trimmed": 3
+      },
+      "chunks": [
+        {
+          "position": "",
+          "routing": "trimmed",
+          "bucket": "trimmed",
+          "reason": "passage is a document header/scope statement with no discrete fact suitable for a single flashcard",
+          "note_type": null,
+          "dispatched": true
+        },
+        {
+          "position": "#contents",
+          "routing": "trimmed",
+          "bucket": "trimmed",
+          "reason": "Passage is a table of contents listing; no single flashcard-relevant fact to extract.",
+          "note_type": null,
+          "dispatched": true
+        },
+        {
+          "position": "#usb-and-usb-c",
+          "routing": "card",
+          "bucket": null,
+          "reason": null,
+          "note_type": "AT Basic",
+          "dispatched": true
+        },
+        {
+          "position": "#displayport-link-rates",
+          "routing": "card",
+          "bucket": null,
+          "reason": null,
+          "note_type": "AT Table",
+          "cards": 2,
+          "dispatched": true
+        },
+        {
+          "position": "#sources",
+          "routing": "trimmed",
+          "bucket": "trimmed",
+          "reason": "passage is a list of reference links",
+          "note_type": null,
+          "dispatched": true
+        }
+      ]
+    },
+    {
+      "name": "mitochondrion",
+      "extractor": "url",
+      "chunk_count": 5,
+      "dispatched_count": 5,
+      "prompt_token_chars": 16011,
+      "counts": {
+        "card": 1,
+        "qa": 1,
+        "trimmed": 3
+      },
+      "chunks": [
+        {
+          "position": "#function",
+          "routing": "card",
+          "bucket": null,
+          "reason": null,
+          "note_type": "AT Basic",
+          "dispatched": true
+        },
+        {
+          "position": "#function",
+          "routing": "qa",
+          "bucket": "qa",
+          "reason": "passage holds multiple distinct facts that cannot fit one card",
+          "note_type": null,
+          "dispatched": true
+        },
+        {
+          "position": "#references",
+          "routing": "trimmed",
+          "bucket": "trimmed",
+          "reason": "passage is a bibliography entry / journal citation",
+          "note_type": null,
+          "dispatched": true
+        },
+        {
+          "position": "#cited-by",
+          "routing": "trimmed",
+          "bucket": "trimmed",
+          "reason": "passage states a citation count with no factual content",
+          "note_type": null,
+          "dispatched": true
+        },
+        {
+          "position": "#author-information",
+          "routing": "trimmed",
+          "bucket": "trimmed",
+          "reason": "author names and affiliations",
+          "note_type": null,
+          "dispatched": true
+        }
+      ]
+    },
+    {
+      "name": "octopus",
+      "extractor": "pdf",
+      "chunk_count": 3,
+      "dispatched_count": 3,
+      "prompt_token_chars": 9579,
+      "counts": {
+        "card": 1,
+        "qa": 0,
+        "trimmed": 2
+      },
+      "chunks": [
+        {
+          "position": "page 1",
+          "routing": "trimmed",
+          "bucket": "trimmed",
+          "reason": "header block with author names and affiliations",
+          "note_type": null,
+          "dispatched": true
+        },
+        {
+          "position": "page 1",
+          "routing": "card",
+          "bucket": null,
+          "reason": null,
+          "note_type": "AT Basic",
+          "dispatched": true
+        },
+        {
+          "position": "page 1",
+          "routing": "trimmed",
+          "bucket": "trimmed",
+          "reason": "passage is a bibliography entry",
+          "note_type": null,
+          "dispatched": true
+        }
+      ]
+    }
+  ]
+}
