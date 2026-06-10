@@ -159,3 +159,92 @@ def test_extract_bytes_raises_on_empty_pdf() -> None:
     doc.close()
     with pytest.raises(ExtractionError, match="image-only"):
         extract_bytes(buf, "blank.pdf")
+
+
+# ---- structural pre-filter heuristics (#68, S4) ----
+
+from anki_translator.classifier import PREFILTER_METADATA_KEY  # noqa: E402
+from anki_translator.extractors.pdf import _prefilter_kind  # noqa: E402
+
+
+def test_prefilter_flags_references_heading_and_sets_section_state() -> None:
+    kind, in_refs = _prefilter_kind("References. Boal JG (2006) Anim Cogn 9:171-180.", 5, False)
+    assert kind == "bibliography"
+    assert in_refs is True
+
+
+def test_prefilter_flags_citation_blocks_within_references_run() -> None:
+    kind, in_refs = _prefilter_kind("Smith J, Jones K (2019). On cables. J. Cables 4:1-9.", 6, True)
+    assert kind == "bibliography" and in_refs is True
+
+
+def test_prefilter_non_citation_block_ends_references_run_conservatively() -> None:
+    """A non-citation block after References must NOT be flagged — an appendix or
+    later section must not be swept up. The run ends instead."""
+    kind, in_refs = _prefilter_kind(
+        "Appendix A presents the full derivation of the recognition model used above.", 7, True
+    )
+    assert kind is None and in_refs is False
+
+
+def test_prefilter_flags_acknowledgments_heading() -> None:
+    kind, _ = _prefilter_kind("Acknowledgements. We thank the marine station staff.", 4, False)
+    assert kind == "acknowledgments"
+    # British spelling too.
+    kind_uk, _ = _prefilter_kind("Acknowledgments: funded by grant 123.", 4, False)
+    assert kind_uk == "acknowledgments"
+
+
+def test_prefilter_flags_title_page_affiliation_block() -> None:
+    """A front-matter (page 1) block with two institutional markers is an
+    author/affiliation block."""
+    kind, _ = _prefilter_kind(
+        "Jane Doe, Department of Marine Biology, University of Naples Federico II, Italy.", 1, False
+    )
+    assert kind == "author-affiliations"
+
+
+def test_prefilter_is_conservative_about_affiliations() -> None:
+    """One marker, or page>1, is not enough — real prose mentioning a single
+    institution must not be trimmed."""
+    # single marker on page 1 → not flagged
+    one_marker, _ = _prefilter_kind(
+        "The university hospital reported a 30 percent reduction in readmissions.", 1, False
+    )
+    assert one_marker is None
+    # two markers but not front matter → not flagged (body content)
+    body, _ = _prefilter_kind(
+        "The department and the university jointly funded the laboratory expansion.", 4, False
+    )
+    assert body is None
+
+
+def test_prefilter_does_not_flag_ordinary_body_prose() -> None:
+    kind, in_refs = _prefilter_kind(
+        "Octopus vulgaris individuals can recognise and remember other octopuses.", 1, False
+    )
+    assert kind is None and in_refs is False
+
+
+def test_extract_flags_references_and_affiliations_not_body(tmp_path: Path) -> None:
+    """End-to-end: a paper-shaped PDF pre-filters the author block and the
+    references entry, leaving the body fact for the classifier."""
+    path = tmp_path / "paper.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    top = 72.0
+    for text in [
+        "Recognition in cephalopods. Jane Doe, Department of Marine Biology, "
+        "University of Naples Federico II, Naples, Italy.",
+        "Octopuses can distinguish familiar neighbours from unfamiliar strangers "
+        "in their natural reef habitat.",
+        "References. Boal JG (2006) Social recognition in cephalopods. Anim Cogn 9:171-180.",
+    ]:
+        page.insert_textbox(pymupdf.Rect(72, top, 540, top + 90), text, fontsize=11, fontname="helv")
+        top += 120.0
+    doc.save(path)
+    doc.close()
+
+    chunks = extract(path)
+    flags = [c.metadata.get(PREFILTER_METADATA_KEY) for c in chunks]
+    assert flags == ["author-affiliations", None, "bibliography"]

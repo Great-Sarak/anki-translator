@@ -114,8 +114,8 @@
       "name": "octopus",
       "extractor": "pdf",
       "chunk_count": 3,
-      "dispatched_count": 3,
-      "prompt_token_chars": 12831,
+      "dispatched_count": 1,
+      "prompt_token_chars": 4284,
       "counts": {
         "card": 1,
         "qa": 0,
@@ -126,9 +126,9 @@
           "position": "page 1",
           "routing": "trimmed",
           "bucket": "trimmed",
-          "reason": "header block with author names and affiliations",
+          "reason": "extractor: pre-filtered author-affiliations",
           "note_type": null,
-          "dispatched": true
+          "dispatched": false
         },
         {
           "position": "page 1",
@@ -142,9 +142,9 @@
           "position": "page 1",
           "routing": "trimmed",
           "bucket": "trimmed",
-          "reason": "passage is a bibliography entry",
+          "reason": "extractor: pre-filtered bibliography",
           "note_type": null,
-          "dispatched": true
+          "dispatched": false
         }
       ]
     }
