@@ -91,6 +91,50 @@ class Overflow:
 
 Classification = Union[CardCandidate, MultiCardCandidate, Overflow]
 
+PREFILTER_METADATA_KEY = "prefilter"
+"""Chunk.metadata key an extractor sets to mark a chunk as structural chaff.
+
+The value is the chaff *kind* (e.g. 'bibliography', 'table-of-contents',
+'author-affiliations'). Flagged chunks are converted to Overflow *before*
+classify() — they never reach the LLM, which is the whole token saving. The
+extractor-agnostic seam (#67); the concrete filter rules live in the extractors
+themselves (#68/#69/#70)."""
+
+
+def prefilter_overflow(chunk: Chunk) -> Overflow | None:
+    """Return a pre-classified Overflow if an extractor flagged this chunk as
+    structural chaff, else None.
+
+    Design (a) from #67: extractors keep emitting a single output type (Chunk)
+    and flag chaff via ``metadata[PREFILTER_METADATA_KEY]``; the pipeline
+    converts the flag here. The reason carries the ``extractor:`` prefix so
+    :func:`anki_translator.queue.overflow_bucket` routes it straight to trimmed,
+    bypassing both the LLM bucket and pattern-match — structural chaff is
+    definitionally trimmed.
+    """
+    kind = chunk.metadata.get(PREFILTER_METADATA_KEY)
+    if kind:
+        return Overflow(chunk=chunk, reason=f"extractor: pre-filtered {kind}")
+    return None
+
+
+def split_prefiltered(chunks: Iterable[Chunk]) -> tuple[list[Chunk], list[Overflow]]:
+    """Partition chunks into (to_classify, pre_filtered_overflows).
+
+    Pre-filtered chunks must never reach classify() — the token saving is the
+    point. Non-flagged chunks pass through untouched, so behavior is identical to
+    today when no extractor flags anything.
+    """
+    to_classify: list[Chunk] = []
+    prefiltered: list[Overflow] = []
+    for chunk in chunks:
+        overflow = prefilter_overflow(chunk)
+        if overflow is not None:
+            prefiltered.append(overflow)
+        else:
+            to_classify.append(chunk)
+    return to_classify, prefiltered
+
 
 def _load_prompt_template() -> str:
     return PROMPT_PATH.read_text(encoding="utf-8")

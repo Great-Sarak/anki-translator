@@ -123,9 +123,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
     # 2. Classify each chunk (fan out — see classifier.resolve_concurrency)
     shapes = load_shapes(args.shapes)
+    # Extractor pre-filter seam (#67): structural-chaff chunks skip the LLM
+    # entirely and route straight to trimmed; only the rest are classified.
+    to_classify, prefiltered = classifier.split_prefiltered(chunks)
     candidates: list[classifier.CardCandidate] = []
-    overflow: list[classifier.Overflow] = []
-    for result in classifier.classify_chunks(chunks, shapes):
+    overflow: list[classifier.Overflow] = list(prefiltered)
+    for result in classifier.classify_chunks(to_classify, shapes):
         if isinstance(result, classifier.CardCandidate):
             candidates.append(result)
         elif isinstance(result, classifier.MultiCardCandidate):
@@ -204,9 +207,12 @@ def _cmd_card(args: argparse.Namespace) -> int:
 
     # 2. Classify
     shapes = load_shapes(args.shapes)
+    # Extractor pre-filter seam (#67): structural-chaff chunks skip the LLM
+    # entirely and route straight to trimmed; only the rest are classified.
+    to_classify, prefiltered = classifier.split_prefiltered(chunks)
     candidates: list[classifier.CardCandidate] = []
-    overflow: list[classifier.Overflow] = []
-    for result in classifier.classify_chunks(chunks, shapes):
+    overflow: list[classifier.Overflow] = list(prefiltered)
+    for result in classifier.classify_chunks(to_classify, shapes):
         if isinstance(result, classifier.CardCandidate):
             candidates.append(result)
         elif isinstance(result, classifier.MultiCardCandidate):

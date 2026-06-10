@@ -70,6 +70,42 @@ def test_clean_corpora_have_zero_routing_drift() -> None:
                 assert decision.disagreement is None, f"{name}: drift on {result.reason!r}"
 
 
+def test_prefiltered_chunk_is_trimmed_with_zero_token_cost() -> None:
+    """#67 acceptance: a flagged chunk routes to trimmed via the `extractor:`
+    reason, is NOT dispatched (dispatched=False), and incurs zero prompt cost —
+    while the unflagged form of the same chunk IS dispatched and costs exactly
+    its build_prompt length. The delta is the measurable token saving."""
+    import dataclasses
+
+    from anki_translator.classifier import build_prompt, prefilter_overflow
+    from anki_translator.config import load_shapes
+
+    shapes = load_shapes(harness.SHAPES_PATH)
+    responses = harness._load_responses()
+    # Take a real corpus chunk that currently dispatches.
+    chunk = harness._extract_octopus()[0]
+    unflagged_record, unflagged_chars = harness._route_chunk(chunk, shapes, responses)
+    assert unflagged_record["dispatched"] is True
+    assert unflagged_chars == len(build_prompt(chunk, shapes)) > 0
+
+    # Flag the same chunk; it must now bypass the LLM at zero cost.
+    flagged = dataclasses.replace(chunk, metadata={**chunk.metadata, "prefilter": "author-affiliations"})
+    assert prefilter_overflow(flagged) is not None
+    flagged_record, flagged_chars = harness._route_chunk(flagged, shapes, responses)
+    assert flagged_record["dispatched"] is False
+    assert flagged_record["routing"] == "trimmed"
+    assert flagged_record["reason"] == "extractor: pre-filtered author-affiliations"
+    assert flagged_chars == 0
+    # Token saving for this chunk equals its full prompt cost.
+    assert unflagged_chars - flagged_chars == len(build_prompt(chunk, shapes))
+
+
+def test_prefilter_does_not_change_clean_baseline() -> None:
+    """With no extractor flagging anything, the S3 seam is inert — the snapshot
+    still matches the committed golden."""
+    assert harness.build_snapshot() == harness.load_golden()
+
+
 def test_missing_response_is_a_hard_error() -> None:
     """Extraction drift (a chunk with no captured response) must fail loudly."""
     from anki_translator.chunk import Chunk

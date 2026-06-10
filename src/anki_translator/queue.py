@@ -68,6 +68,12 @@ _SUBSTANTIVE_REASON_PREFIXES = (
     "no_shape_fit",
 )
 
+# Extractor pre-filter reason prefix (#67). A chunk an extractor flagged as
+# structural chaff never reaches the LLM; its reason is "extractor: pre-filtered
+# <kind>". This is definitionally trimmed — bypasses both LLM bucket and
+# pattern-match.
+_EXTRACTOR_REASON_PREFIX = "extractor:"
+
 _SUBSTANTIVE_SIGNALS = (
     "multiple distinct facts",
     "too complex",
@@ -227,6 +233,11 @@ def classify_overflow_bucket(reason: str, bucket: str | None = None) -> BucketDe
     3. With no LLM bucket, fall back to reason pattern-matching (pre-#65), so a
        run whose model didn't emit a bucket routes exactly as it did before.
     """
+    if reason.startswith(_EXTRACTOR_REASON_PREFIX):
+        # Extractor-flagged structural chaff: definitionally trimmed, no LLM
+        # involved. Bypasses both the LLM bucket and pattern-match (#67).
+        return BucketDecision("trimmed", None, False, None)
+
     if reason.startswith(_SUBSTANTIVE_REASON_PREFIXES):
         return BucketDecision("qa", bucket if bucket in ("qa", "trimmed") else None, False, None)
 

@@ -115,6 +115,58 @@ def test_classify_overflow_coerces_missing_or_invalid_bucket_to_none(shapes: dic
     assert isinstance(bad_bucket, Overflow) and bad_bucket.bucket is None
 
 
+# ---- extractor pre-filter seam (#67) ----
+
+
+def _flagged(text: str, kind: str) -> Chunk:
+    return Chunk(text=text, source="s", position="", source_type="manual",
+                 metadata={"prefilter": kind})
+
+
+def test_prefilter_overflow_converts_flagged_chunk() -> None:
+    from anki_translator.classifier import prefilter_overflow
+
+    ov = prefilter_overflow(_flagged("References. Boal JG (2006).", "bibliography"))
+    assert isinstance(ov, Overflow)
+    assert ov.reason == "extractor: pre-filtered bibliography"
+    assert ov.bucket is None
+
+
+def test_prefilter_overflow_passes_unflagged_chunk_through(chunk: Chunk) -> None:
+    from anki_translator.classifier import prefilter_overflow
+
+    assert prefilter_overflow(chunk) is None
+
+
+def test_split_prefiltered_partitions_chunks(chunk: Chunk) -> None:
+    from anki_translator.classifier import split_prefiltered
+
+    flagged = _flagged("a bibliography block", "bibliography")
+    to_classify, prefiltered = split_prefiltered([chunk, flagged])
+    assert to_classify == [chunk]
+    assert len(prefiltered) == 1
+    assert prefiltered[0].chunk is flagged
+    assert prefiltered[0].reason == "extractor: pre-filtered bibliography"
+
+
+def test_split_prefiltered_never_dispatches_flagged_chunks() -> None:
+    """A flagged chunk must never reach classify(). Proven here by routing only
+    the to_classify partition through a stub that raises if it sees the flagged
+    text."""
+    from anki_translator.classifier import classify_chunks, split_prefiltered
+
+    flagged = _flagged("STRUCTURAL CHAFF — must not be classified", "table-of-contents")
+    keep = Chunk(text="real fact", source="s", position="", source_type="manual", metadata={})
+    to_classify, prefiltered = split_prefiltered([flagged, keep])
+
+    def stub(prompt: str) -> str:
+        assert "STRUCTURAL CHAFF" not in prompt, "flagged chunk was dispatched to the LLM"
+        return json.dumps({"choice": "overflow", "reason": "x"})
+
+    classify_chunks(to_classify, load_shapes(REPO_ROOT / "config" / "shapes.yaml"), llm=stub, max_workers=1)
+    assert len(prefiltered) == 1 and len(to_classify) == 1
+
+
 # ---- cutoff enforcement (defensive against LLM hallucinated compliance) ----
 
 

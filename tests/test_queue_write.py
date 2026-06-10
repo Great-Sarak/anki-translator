@@ -461,6 +461,16 @@ def test_overflow_bucket_classifier_prefix_beats_llm_bucket() -> None:
 from anki_translator.queue import classify_overflow_bucket  # noqa: E402
 
 
+def test_extractor_prefix_routes_to_trimmed_bypassing_all_other_signals() -> None:
+    """#67: a pre-filtered chunk's `extractor:` reason is definitionally trimmed
+    — it overrides even an (erroneous) LLM qa bucket and ignores pattern-match."""
+    assert overflow_bucket("extractor: pre-filtered bibliography") == "trimmed"
+    # Even if a stray bucket were attached, the extractor prefix wins.
+    decision = classify_overflow_bucket("extractor: pre-filtered table-of-contents", "qa")
+    assert decision.bucket == "trimmed"
+    assert decision.disagreement is None
+
+
 def test_strong_chaff_downgrades_llm_qa_mislabel_to_trimmed() -> None:
     """The S2 backstop: the LLM tagged obvious structural chaff as `qa`, but a
     *strong* chaff signal overrides it to `trimmed` and the disagreement is

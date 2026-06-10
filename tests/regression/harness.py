@@ -47,6 +47,7 @@ from anki_translator.classifier import (
     Overflow,
     build_prompt,
     classify,
+    prefilter_overflow,
 )
 from anki_translator.chunk import Chunk
 from anki_translator.config import load_shapes
@@ -94,12 +95,13 @@ def _load_responses() -> dict[str, str]:
 def _prefilter(chunk: Chunk) -> Overflow | None:
     """Structural pre-filter seam (S3, #67).
 
-    Returns an :class:`Overflow` for chunks an extractor flagged as structural
-    chaff, which bypass the LLM entirely (zero token cost). In S0 nothing is
-    pre-filtered — every chunk is dispatched to ``classify()``. Later layers
-    plug their logic in here so the token metric reflects the saving.
+    Delegates to the real pipeline logic (``classifier.prefilter_overflow``): a
+    chunk an extractor flagged as structural chaff becomes an Overflow that
+    bypasses the LLM entirely (zero token cost, ``dispatched=False``). When no
+    extractor flags anything — as on the clean S0 corpora — this returns None and
+    every chunk is dispatched, so the baseline is unchanged.
     """
-    return None
+    return prefilter_overflow(chunk)
 
 
 def _route_chunk(
