@@ -14,7 +14,60 @@ from datetime import date
 from pathlib import Path
 
 from ..chunk import Chunk
+from ..classifier import PREFILTER_METADATA_KEY
 from . import ExtractionError
+
+# --- Structural pre-filter heuristics (#69, S5) ----------------------------------
+#
+# Flag heading-only chunks, prose-less front-matter, and link-list / table-of-
+# contents bodies as structural chaff (PREFILTER_METADATA_KEY) so they bypass the
+# LLM and route straight to trimmed (#67). Conservative bias: a chunk only flags
+# on an unambiguous structural shape — any real prose line defeats every rule.
+_HEADING_LINE_RE = re.compile(r"^#{1,6}\s")
+_H1_LINE_RE = re.compile(r"^#\s")
+# A "**Label:** value" front-matter metadata line (Scope:, Date:, Author:, ...).
+_LABEL_LINE_RE = re.compile(r"^\*\*[^*]+:\*\*")
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+(.*)$")
+_LINK_RE = re.compile(r"\[[^\]]+\]\([^)]+\)|https?://\S+")
+
+
+def _prefilter_kind(text: str) -> str | None:
+    """Classify a markdown chunk as structural chaff, or None to keep it.
+
+    - 'heading': a chunk that is only heading line(s) with no body.
+    - 'front-matter': a preamble led by an H1 whose body is solely
+      "**Label:** value" metadata lines (no plain prose).
+    - 'table-of-contents' / 'link-list': a body whose every line is a list item
+      and every item contains a link, with no other prose.
+    """
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    heading_lines = [ln for ln in lines if _HEADING_LINE_RE.match(ln)]
+    body_lines = [ln for ln in lines if not _HEADING_LINE_RE.match(ln)]
+
+    if heading_lines and not body_lines:
+        return "heading"
+
+    if body_lines and _H1_LINE_RE.match(lines[0]) and all(_LABEL_LINE_RE.match(ln) for ln in body_lines):
+        return "front-matter"
+
+    list_items = [m.group(1) for ln in body_lines if (m := _LIST_ITEM_RE.match(ln))]
+    if body_lines and list_items and len(list_items) == len(body_lines) and all(
+        _LINK_RE.search(item) for item in list_items
+    ):
+        heading_text = heading_lines[0].lower() if heading_lines else ""
+        return "table-of-contents" if "contents" in heading_text else "link-list"
+
+    return None
+
+
+def _with_prefilter(metadata: dict[str, object], text: str) -> dict[str, object]:
+    """Return metadata with a prefilter tag added if the chunk is structural chaff."""
+    kind = _prefilter_kind(text)
+    if kind:
+        return {**metadata, PREFILTER_METADATA_KEY: kind}
+    return metadata
 
 # Strip an optional YAML frontmatter block at the start of markdown files.
 FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", re.DOTALL)
@@ -67,7 +120,7 @@ def extract_text(text: str, label: str | None = None) -> list[Chunk]:
             source=label,
             position="",
             source_type="manual",
-            metadata={"label": label},
+            metadata=_with_prefilter({"label": label}, p),
         )
         for p in paragraphs
     ]
@@ -109,7 +162,7 @@ def extract_file(path: Path | str, label: str | None = None) -> list[Chunk]:
                 source=effective_label,
                 position=f"#{slug}" if slug else "",
                 source_type="manual",
-                metadata={"label": effective_label, "anchor": slug},
+                metadata=_with_prefilter({"label": effective_label, "anchor": slug}, part_text),
             )
             for part_text, slug in parts
         ]

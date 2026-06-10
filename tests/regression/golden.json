@@ -5,8 +5,8 @@
       "name": "cable-identification",
       "extractor": "manual",
       "chunk_count": 5,
-      "dispatched_count": 5,
-      "prompt_token_chars": 21480,
+      "dispatched_count": 2,
+      "prompt_token_chars": 8618,
       "counts": {
         "card": 2,
         "qa": 0,
@@ -17,17 +17,17 @@
           "position": "",
           "routing": "trimmed",
           "bucket": "trimmed",
-          "reason": "passage is a document header/scope statement with no discrete fact suitable for a single flashcard",
+          "reason": "extractor: pre-filtered front-matter",
           "note_type": null,
-          "dispatched": true
+          "dispatched": false
         },
         {
           "position": "#contents",
           "routing": "trimmed",
           "bucket": "trimmed",
-          "reason": "Passage is a table of contents listing; no single flashcard-relevant fact to extract.",
+          "reason": "extractor: pre-filtered table-of-contents",
           "note_type": null,
-          "dispatched": true
+          "dispatched": false
         },
         {
           "position": "#usb-and-usb-c",
@@ -50,9 +50,9 @@
           "position": "#sources",
           "routing": "trimmed",
           "bucket": "trimmed",
-          "reason": "passage is a list of reference links",
+          "reason": "extractor: pre-filtered link-list",
           "note_type": null,
-          "dispatched": true
+          "dispatched": false
         }
       ]
     },

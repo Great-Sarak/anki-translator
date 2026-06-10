@@ -168,3 +168,74 @@ def test_extract_file_txt_still_has_empty_position(tmp_path: Path) -> None:
     chunks = extract_file(p)
     for c in chunks:
         assert c.position == ""
+
+
+# ---- structural pre-filter heuristics (#69, S5) ----
+
+from anki_translator.classifier import PREFILTER_METADATA_KEY  # noqa: E402
+from anki_translator.extractors.manual import _prefilter_kind  # noqa: E402
+
+
+def test_prefilter_flags_heading_only_chunk() -> None:
+    assert _prefilter_kind("## USB and USB-C") == "heading"
+    assert _prefilter_kind("### Safety footguns\n") == "heading"
+
+
+def test_prefilter_flags_prose_less_front_matter() -> None:
+    """An H1 preamble whose body is only **Label:** metadata lines is front-matter."""
+    text = (
+        "# Computer cable identification and testing guide\n\n"
+        "**Scope:** USB, HDMI, DisplayPort, and the rest of the drawer.\n"
+        "**Date:** 2026-05-30"
+    )
+    assert _prefilter_kind(text) == "front-matter"
+
+
+def test_prefilter_flags_table_of_contents_and_link_lists() -> None:
+    toc = (
+        "## Contents\n\n"
+        "1. [USB and USB-C](#usb-and-usb-c)\n"
+        "2. [Sources](#sources)"
+    )
+    assert _prefilter_kind(toc) == "table-of-contents"
+    sources = (
+        "## Sources\n\n"
+        "- [USB-IF](https://www.usb.org/)\n"
+        "- [VESA](https://www.vesa.org/)"
+    )
+    assert _prefilter_kind(sources) == "link-list"
+
+
+def test_prefilter_keeps_real_prose_and_tables() -> None:
+    """Conservative: any real prose line, or a content table, defeats every rule."""
+    prose = "## USB and USB-C\n\nUSB-C is a connector shape, not a capability; data rate depends on the cable."
+    assert _prefilter_kind(prose) is None
+    table = "## Link rates\n\n| Version | Rate |\n| --- | --- |\n| DP 1.2 | HBR2 |"
+    assert _prefilter_kind(table) is None
+    # A preamble with a real intro sentence (not a label line) is NOT front-matter.
+    mixed = "# Guide\n\n**Scope:** cables.\n\nThis guide explains how to identify each cable by sight."
+    assert _prefilter_kind(mixed) is None
+    # A list mixing links and a plain prose item is not a pure link-list.
+    mixed_list = "## Notes\n\n- [USB-IF](https://www.usb.org/)\n- Remember to check the cable certification."
+    assert _prefilter_kind(mixed_list) is None
+
+
+def test_extract_file_flags_front_matter_toc_and_sources_not_content(tmp_path: Path) -> None:
+    """End-to-end on a cable-guide-shaped .md: preamble, Contents, Sources are
+    pre-filtered; the term-def prose and the reference table are kept."""
+    md = tmp_path / "guide.md"
+    md.write_text(
+        "# Cable guide\n\n"
+        "**Scope:** USB, HDMI, DisplayPort.\n\n"
+        "## Contents\n\n"
+        "1. [USB](#usb)\n"
+        "2. [Sources](#sources)\n\n"
+        "## USB\n\n"
+        "USB-C is a connector shape, not a capability; the data rate depends on the cable spec.\n\n"
+        "## Sources\n\n"
+        "- [USB-IF](https://www.usb.org/)\n",
+        encoding="utf-8",
+    )
+    chunks = extract_file(md)
+    flags = [c.metadata.get(PREFILTER_METADATA_KEY) for c in chunks]
+    assert flags == ["front-matter", "table-of-contents", None, "link-list"]
