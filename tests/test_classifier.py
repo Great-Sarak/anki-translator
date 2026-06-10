@@ -91,6 +91,30 @@ def test_classify_overflow_when_no_shapes_available(chunk: Chunk) -> None:
     assert result.reason == "no_shape_fit"
 
 
+def test_classify_overflow_parses_llm_bucket(shapes: dict, chunk: Chunk) -> None:
+    """#65: the LLM self-tags the overflow bucket; classify threads it onto Overflow."""
+    stub = _stub(json.dumps(
+        {"choice": "overflow", "reason": "bibliography entry", "bucket": "trimmed"}
+    ))
+    result = classify(chunk, shapes, llm=stub)
+    assert isinstance(result, Overflow)
+    assert result.bucket == "trimmed"
+
+
+def test_classify_overflow_coerces_missing_or_invalid_bucket_to_none(shapes: dict, chunk: Chunk) -> None:
+    """A missing or out-of-vocabulary bucket becomes None, so queue.overflow_bucket
+    falls back to pre-#65 pattern-matching."""
+    no_bucket = classify(chunk, shapes, llm=_stub(json.dumps(
+        {"choice": "overflow", "reason": "too complex for one card"}
+    )))
+    assert isinstance(no_bucket, Overflow) and no_bucket.bucket is None
+
+    bad_bucket = classify(chunk, shapes, llm=_stub(json.dumps(
+        {"choice": "overflow", "reason": "too complex", "bucket": "wastebasket"}
+    )))
+    assert isinstance(bad_bucket, Overflow) and bad_bucket.bucket is None
+
+
 # ---- cutoff enforcement (defensive against LLM hallucinated compliance) ----
 
 

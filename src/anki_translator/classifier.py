@@ -86,6 +86,7 @@ class Overflow:
     """A passage that does not fit any shape's budget — routed to the qa/ markdown bucket."""
     chunk: Chunk
     reason: str  # one of: 'no_shape_fit', 'exceeds_budget', 'llm_error', 'invalid_response'
+    bucket: str | None = None  # LLM self-tagged overflow bucket: 'qa' | 'trimmed' | None
 
 
 Classification = Union[CardCandidate, MultiCardCandidate, Overflow]
@@ -194,7 +195,17 @@ def classify(
 
     choice = parsed["choice"]
     if choice == "overflow":
-        return Overflow(chunk=chunk, reason=str(parsed.get("reason", "no_shape_fit")))
+        # The LLM self-tags qa vs trimmed (#65). Tolerate missing/invalid — an
+        # absent or out-of-vocabulary bucket falls back to reason pattern-match
+        # in queue.overflow_bucket, preserving pre-#65 routing.
+        bucket = parsed.get("bucket")
+        if bucket not in ("qa", "trimmed"):
+            bucket = None
+        return Overflow(
+            chunk=chunk,
+            reason=str(parsed.get("reason", "no_shape_fit")),
+            bucket=bucket,
+        )
 
     if choice not in shapes:
         return Overflow(chunk=chunk, reason=f"invalid_response: unknown note type {choice!r}")

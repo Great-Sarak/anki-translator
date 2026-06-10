@@ -24,8 +24,17 @@ If a non-term-table shape fits:
 If a term-table shape fits (each row of the source table becomes one entry in `rows`; each value column becomes one `attrs` entry per row):
 {{"choice": "<note-type name>", "rows": [{{"key": "<lookup-column value>", "attrs": [{{"name": "<value-column header>", "value": "<cell value>"}}, ...]}}, ...]}}
 
-If no shape fits within its budget:
-{{"choice": "overflow", "reason": "<one short sentence>"}}
+If no shape fits within its budget, also tag which overflow bucket the passage belongs to:
+{{"choice": "overflow", "reason": "<one short sentence>", "bucket": "qa" | "trimmed"}}
+
+Overflow bucket — choose exactly one:
+- "qa": real subject-matter content you wanted to card but could not fit one shape's budget — a genuine fact, definition, or explanation that is too long, too complex, or holds multiple distinct facts. Kept as reference material.
+- "trimmed": structural or non-content text with no learnable fact — bibliography/citation entries, tables of contents, section headers, author names and affiliations, acknowledgments, navigation, link lists, transitional boilerplate.
+
+Worked examples:
+- A bibliography line ("Boal JG (2006) Social recognition. Anim Cogn 9:171-180.") → {{"choice": "overflow", "reason": "bibliography/citation entry", "bucket": "trimmed"}}
+- A table of contents or a list of section links → {{"choice": "overflow", "reason": "table of contents listing", "bucket": "trimmed"}}
+- A paragraph stating several distinct card-worthy facts that cannot share one card → {{"choice": "overflow", "reason": "passage holds multiple distinct facts", "bucket": "qa"}}
 
 Passage:
 {chunk_text}

@@ -159,7 +159,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         trimmed_dir=args.trimmed_dir,
     )
     from .queue import overflow_bucket
-    qa_count = sum(1 for ov in overflow if overflow_bucket(ov.reason) == "qa")
+    qa_count = sum(1 for ov in overflow if overflow_bucket(ov.reason, ov.bucket) == "qa")
     trimmed_count = len(overflow) - qa_count
     print(json.dumps({
         "queue_file": str(queue_path),
@@ -270,7 +270,7 @@ def _cmd_card(args: argparse.Namespace) -> int:
         qa_dir=args.qa_dir,
         trimmed_dir=args.trimmed_dir,
     )
-    qa_count = sum(1 for ov in overflow if overflow_bucket(ov.reason) == "qa")
+    qa_count = sum(1 for ov in overflow if overflow_bucket(ov.reason, ov.bucket) == "qa")
     print(json.dumps({
         "queue_file": str(queue_path),
         "qa_file": str(qa_path),
