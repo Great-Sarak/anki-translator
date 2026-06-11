@@ -55,3 +55,44 @@ pytest tests/test_overflow_regression.py        # CI assertion
 `--update` is intentional: regenerate the golden only when a routing change is
 expected and reviewed (e.g. landing S1–S6), never to paper over an unexplained
 diff.
+
+## Originals mode — the real-corpora baseline
+
+The committed stubs are small, deterministic stand-ins, but the redesign was
+driven by the *real* sources. Drop the full-size originals into the gitignored
+`corpora/originals/` folder and the harness runs against **them** instead, using
+a separate fixture variant so the portable golden is never touched:
+
+| corpus | source file in `corpora/originals/` |
+| --- | --- |
+| `cable-identification` | `cable_identification.md` (the real ~36 KB note) |
+| `octopus` | `octopus.pdf` (the real 13-page Current Biology PDF) |
+| `plos` *(4th item)* | `plos.pdf` — PLOS ONE `pone.0018710`, `?type=printable` (served as `application/pdf`, so it routes through the PDF extractor exactly as `cli.py` does for a fetched PDF body) |
+
+Each corpus falls back **independently**: a present original wins, else the
+committed stub. `mitochondrion` has no original, so it always uses its stub.
+PLOS is added only when `originals/plos.pdf` is present.
+
+When any original is present the harness reads/writes the `*.originals.json`
+variant (`golden.originals.json`, `responses.originals.json`) — both gitignored,
+alongside the copyrighted source. CI (no originals) is unaffected: it runs the
+3 stubs against the committed `golden.json`.
+
+```sh
+# 1. populate corpora/originals/ with the real files (gitignored)
+# 2. capture live-classifier responses for them (network; haiku via the gateway)
+python tests/regression/harness.py --record    # writes responses.originals.json
+# 3. lock the real baseline
+python tests/regression/harness.py --update     # writes golden.originals.json
+python tests/regression/harness.py --check      # verifies the real snapshot
+```
+
+`--record` calls the live classifier once per *dispatched* chunk (pre-filtered
+chaff is skipped), keyed by `sha1(chunk.text)` like the replay fixture. Re-runs
+only fill gaps.
+
+Note: the `test_clean_corpora_have_zero_routing_drift` invariant is a property of
+the hand-built clean stubs and is **skipped** in originals mode — real corpora
+legitimately exercise the S2 backstop (the live model self-tags chunks `trimmed`
+whose reasons aren't a recognised chaff pattern; #66 records that as telemetry,
+not failure). The real routing is locked by the `golden.originals.json` match.
