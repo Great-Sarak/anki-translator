@@ -456,6 +456,87 @@ def test_overflow_bucket_classifier_prefix_beats_llm_bucket() -> None:
     assert overflow_bucket("llm_error: TimeoutError", "trimmed") == "qa"
 
 
+# ---- _CHAFF_SIGNALS demoted to a conservative safety net + drift telemetry (#66) ----
+
+from anki_translator.queue import classify_overflow_bucket  # noqa: E402
+
+
+def test_strong_chaff_downgrades_llm_qa_mislabel_to_trimmed() -> None:
+    """The S2 backstop: the LLM tagged obvious structural chaff as `qa`, but a
+    *strong* chaff signal overrides it to `trimmed` and the disagreement is
+    recorded for drift-watching."""
+    decision = classify_overflow_bucket("passage is a bibliography entry", "qa")
+    assert decision.bucket == "trimmed"
+    assert decision.downgraded is True
+    assert decision.disagreement == "qa_with_chaff"
+
+
+def test_llm_qa_without_strong_chaff_is_left_alone() -> None:
+    """The backstop is conservative: a `qa` with no strong chaff signal stays qa,
+    no disagreement. A merely-fuzzy _CHAFF_SIGNALS hit does NOT override the LLM."""
+    decision = classify_overflow_bucket("a dense paragraph holding several interlocking facts", "qa")
+    assert decision.bucket == "qa"
+    assert decision.downgraded is False
+    assert decision.disagreement is None
+
+
+def test_backstop_never_upgrades_trimmed_to_qa() -> None:
+    """Conservative-only: an LLM `trimmed` is always honored, even when no pattern
+    chaff signal fires. The disagreement is recorded but not acted on — we never
+    resurrect content the LLM chose to trim."""
+    decision = classify_overflow_bucket("an unusual sidebar pull-quote", "trimmed")
+    assert decision.bucket == "trimmed"
+    assert decision.disagreement == "trimmed_without_chaff"
+
+    # LLM trimmed + a pattern chaff signal present → agreement, no disagreement.
+    agree = classify_overflow_bucket("passage is a table of contents", "trimmed")
+    assert agree.bucket == "trimmed"
+    assert agree.disagreement is None
+
+
+def test_classifier_prefix_records_no_disagreement() -> None:
+    """Mechanical prefixes short-circuit to qa before any chaff check, so they
+    never register as drift even if a chaff word trails the reason."""
+    decision = classify_overflow_bucket(
+        "exceeds_budget: Back is 250 chars (was a bibliography reference)", "trimmed"
+    )
+    assert decision.bucket == "qa"
+    assert decision.disagreement is None
+
+
+def test_write_queue_emits_drift_footer_and_downgrades_in_trimmed_file(tmp_path: Path) -> None:
+    """End-to-end: a qa-tagged chaff chunk is downgraded into the trimmed file and
+    the drift footer counts the override."""
+    overflow = [
+        # LLM mislabeled this bibliography as qa; the backstop downgrades it.
+        Overflow(chunk=_chunk("Smith J, Jones K. (2019). On cables. J. Cables 4:1-9."),
+                 reason="passage is a bibliography entry", bucket="qa"),
+        # A genuine substantive qa, left in qa.
+        Overflow(chunk=_chunk("A real multi-fact paragraph."),
+                 reason="passage holds multiple distinct facts", bucket="qa"),
+    ]
+    _, qa_path, trimmed_path = write_queue(
+        tagged=[],
+        overflow=overflow,
+        deck="Reading",
+        slug="cables",
+        queue_dir=tmp_path / "queue",
+        qa_dir=tmp_path / "qa",
+        trimmed_dir=tmp_path / "trimmed",
+        ingestion_date=date(2026, 5, 27),
+    )
+    trimmed_body = trimmed_path.read_text()
+    qa_body = qa_path.read_text()
+    # Downgraded chunk moved to trimmed; genuine qa stayed in qa.
+    assert "Smith J, Jones K." in trimmed_body and "Smith J, Jones K." not in qa_body
+    assert "A real multi-fact paragraph." in qa_body and "A real multi-fact paragraph." not in trimmed_body
+    # Drift footer present on the trimmed file, counting exactly one override.
+    assert "Routing drift" in trimmed_body
+    assert "1 qa→trimmed override" in trimmed_body
+    # The qa file carries no drift footer.
+    assert "Routing drift" not in qa_body
+
+
 def test_write_queue_splits_overflow_between_qa_and_trimmed(tmp_path: Path) -> None:
     """End-to-end split: mixed overflow batch routes each chunk to the right
     file. Substantive overflows land in the qa file with their text; trimmed

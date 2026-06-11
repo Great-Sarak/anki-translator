@@ -51,6 +51,25 @@ def test_token_metric_counts_only_dispatched_chunks() -> None:
         assert len(corpus["chunks"]) == corpus["chunk_count"]
 
 
+def test_clean_corpora_have_zero_routing_drift() -> None:
+    """#66 acceptance: the clean baseline corpora produce no LLM-vs-pattern
+    disagreement. (Their captured responses carry no LLM bucket, so routing goes
+    through pattern-match and the backstop never fires.)"""
+    from anki_translator.classifier import Overflow, classify
+    from anki_translator.config import load_shapes
+    from anki_translator.queue import classify_overflow_bucket
+
+    shapes = load_shapes(harness.SHAPES_PATH)
+    responses = harness._load_responses()
+    for name, _extractor, extract in harness.CORPORA:
+        for chunk in extract():
+            key = harness._chunk_key(chunk)
+            result = classify(chunk, shapes, llm=lambda _p, r=responses[key]: r)
+            if isinstance(result, Overflow):
+                decision = classify_overflow_bucket(result.reason, result.bucket)
+                assert decision.disagreement is None, f"{name}: drift on {result.reason!r}"
+
+
 def test_missing_response_is_a_hard_error() -> None:
     """Extraction drift (a chunk with no captured response) must fail loudly."""
     from anki_translator.chunk import Chunk

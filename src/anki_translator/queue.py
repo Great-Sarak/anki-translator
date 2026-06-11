@@ -142,50 +142,112 @@ _CHAFF_SIGNALS = (
 )
 
 
-def overflow_bucket(reason: str, bucket: str | None = None) -> str:
-    """Route an Overflow to either 'qa' (substantive) or 'trimmed' (chaff).
+# High-precision structural-chaff markers (#66). A strict subset of
+# _CHAFF_SIGNALS: phrasings that are essentially *never* real subject-matter
+# content. Because they're high-precision, they're safe to use as a conservative
+# backstop that can override an LLM `qa` mislabel — unlike the fuzzier full list,
+# which we no longer trust to override an explicit content judgment.
+_STRONG_CHAFF_SIGNALS = (
+    "bibliograph",
+    "table of contents",
+    "section header",
+    "section heading",
+    "document header",
+    "page header",
+    "header block",
+    "author names",
+    "affiliations",
+    "acknowledgment",
+    "acknowledgement",
+    "reference list",
+    "reference links",
+    "list of links",
+    "is a citation",
+    "journal citation",
+    "citation metadata",
+    "citation header",
+    "publication metadata",
+)
 
-    Substantive overflow is content the classifier wanted to make a card from but
-    couldn't quite fit — worth keeping next to the queue as reference material.
-    Trimmed chaff is content with no factual value (citation metadata, TOC entries,
-    section headers, author lists, transitional prose) — useful for spot-checking
-    that nothing important was dropped, but disposable once verified.
 
-    Precedence (#65) — classifier-prefix > LLM bucket > pattern-match:
+@dataclass(frozen=True)
+class BucketDecision:
+    """The routing decision for one Overflow, with drift telemetry (#66).
 
-    1. Classifier-mechanical prefixes (`exceeds_budget:`, `invalid_response:`,
-       `llm_error:`, `no_shape_fit`) are authoritative `qa`. They fire on real
-       content that didn't fit a budget or on a dispatch fault — mechanical facts,
-       not content judgments — so they win even if the LLM mislabels the bucket.
-    2. The LLM's self-tagged `bucket` ('qa'|'trimmed') is the primary content
-       signal when present and valid. `classify()` has already coerced any
-       missing/out-of-vocabulary value to None.
-    3. Otherwise fall back to reason pattern-matching (pre-#65 behavior), so a
-       run whose model didn't emit a bucket routes exactly as it did before.
-
-    Default = qa. Unknown phrasings are kept rather than discarded — easier to
-    extend `_CHAFF_SIGNALS` as new patterns appear than to recover content lost
-    to overreaching trim rules.
+    bucket:       final routing — 'qa' or 'trimmed'.
+    llm_bucket:   the LLM's self-tag ('qa'|'trimmed'|None).
+    downgraded:   True iff a strong chaff signal forced an LLM 'qa' to 'trimmed'.
+    disagreement: 'qa_with_chaff' (LLM said qa, strong chaff overrode it),
+                  'trimmed_without_chaff' (LLM said trimmed, no pattern chaff
+                  signal — recorded but NOT acted on), or None.
     """
-    if reason.startswith(_SUBSTANTIVE_REASON_PREFIXES):
-        return "qa"
-    if bucket in ("qa", "trimmed"):
-        return bucket
+    bucket: str
+    llm_bucket: str | None
+    downgraded: bool
+    disagreement: str | None
+
+
+def _pattern_bucket(reason: str) -> str:
+    """Pre-#65 reason pattern-matching. The fallback when no LLM bucket is present.
+
+    A reason that names a chaff content type belongs in trimmed regardless of how
+    the LLM phrased the budget violation — the generic 'exceed' signal otherwise
+    ate the wrong bucket on a live ingest (Cell octopus PDF, 2026-06-08). Default
+    to qa for unknown phrasings; better to over-keep than to silently discard.
+    """
     lowered = reason.lower()
-    # Chaff check runs first. The LLM frequently rationalizes why a
-    # bibliographic / citation chunk overflowed by saying it "exceeds field
-    # capacity" or "requires multiple metadata fields" — the generic substantive
-    # signal "exceed" then ate the wrong bucket on a live ingest (Cell octopus
-    # PDF, 2026-06-08). A reason that names a chaff content type belongs in
-    # trimmed regardless of how the LLM phrased the budget violation.
     if any(s in lowered for s in _CHAFF_SIGNALS):
         return "trimmed"
-    # No chaff signal — fall back to substantive intent ("multiple distinct
-    # facts", "too complex", "cannot fit"). Default to qa for unknown
-    # phrasings; better to over-keep than to silently discard new patterns.
     if any(s in lowered for s in _SUBSTANTIVE_SIGNALS):
         return "qa"
     return "qa"
+
+
+def classify_overflow_bucket(reason: str, bucket: str | None = None) -> BucketDecision:
+    """Route an Overflow to 'qa' (substantive) or 'trimmed' (chaff), with telemetry.
+
+    Substantive overflow is content the classifier wanted to card but couldn't
+    quite fit — kept next to the queue as reference. Trimmed chaff has no factual
+    value (citations, TOC, section headers, author lists) — disposable once a
+    reviewer confirms nothing important was dropped.
+
+    Precedence — classifier-prefix > LLM bucket (+ conservative chaff backstop) >
+    pattern-match:
+
+    1. Classifier-mechanical prefixes (`exceeds_budget:`, `invalid_response:`,
+       `llm_error:`, `no_shape_fit`) are authoritative `qa` — mechanical facts,
+       not content judgments.
+    2. The LLM's self-tagged bucket (#65) is the primary content signal, but with
+       `_CHAFF_SIGNALS` demoted to a safety net (#66): if the LLM says `qa` yet a
+       *strong* chaff signal fires, downgrade to `trimmed` and record the
+       disagreement. The backstop is conservative — it only ever downgrades
+       qa→trimmed on a high-precision signal, never silently upgrades
+       trimmed→qa. An LLM `trimmed` with no pattern chaff signal is recorded as a
+       disagreement for drift-watching but left as `trimmed`.
+    3. With no LLM bucket, fall back to reason pattern-matching (pre-#65), so a
+       run whose model didn't emit a bucket routes exactly as it did before.
+    """
+    if reason.startswith(_SUBSTANTIVE_REASON_PREFIXES):
+        return BucketDecision("qa", bucket if bucket in ("qa", "trimmed") else None, False, None)
+
+    if bucket in ("qa", "trimmed"):
+        lowered = reason.lower()
+        strong_chaff = any(s in lowered for s in _STRONG_CHAFF_SIGNALS)
+        if bucket == "qa" and strong_chaff:
+            return BucketDecision("trimmed", "qa", True, "qa_with_chaff")
+        if bucket == "trimmed" and not any(s in lowered for s in _CHAFF_SIGNALS):
+            # Disagreement: the LLM trimmed something pattern-match wouldn't have.
+            # Recorded for drift, but trusted — we never upgrade trimmed→qa.
+            return BucketDecision("trimmed", "trimmed", False, "trimmed_without_chaff")
+        return BucketDecision(bucket, bucket, False, None)
+
+    return BucketDecision(_pattern_bucket(reason), None, False, None)
+
+
+def overflow_bucket(reason: str, bucket: str | None = None) -> str:
+    """Final routing string for an Overflow. Thin wrapper over
+    :func:`classify_overflow_bucket` for callers that only need the bucket."""
+    return classify_overflow_bucket(reason, bucket).bucket
 
 
 def write_queue(
@@ -220,8 +282,13 @@ def write_queue(
     qa_path.parent.mkdir(parents=True, exist_ok=True)
     trimmed_path.parent.mkdir(parents=True, exist_ok=True)
 
-    qa_overflows = [ov for ov in overflow if overflow_bucket(ov.reason, ov.bucket) == "qa"]
-    trimmed_overflows = [ov for ov in overflow if overflow_bucket(ov.reason, ov.bucket) == "trimmed"]
+    decisions = [(ov, classify_overflow_bucket(ov.reason, ov.bucket)) for ov in overflow]
+    qa_overflows = [ov for ov, dec in decisions if dec.bucket == "qa"]
+    trimmed_overflows = [ov for ov, dec in decisions if dec.bucket == "trimmed"]
+    drift = {
+        "qa_with_chaff": sum(1 for _, dec in decisions if dec.disagreement == "qa_with_chaff"),
+        "trimmed_without_chaff": sum(1 for _, dec in decisions if dec.disagreement == "trimmed_without_chaff"),
+    }
 
     queue_path.write_text(_render_queue(tagged, deck=deck), encoding="utf-8")
     qa_path.write_text(
@@ -229,7 +296,7 @@ def write_queue(
         encoding="utf-8",
     )
     trimmed_path.write_text(
-        _render_overflow_file(trimmed_overflows, title="Trimmed", slug=slug, ingestion_date=d),
+        _render_overflow_file(trimmed_overflows, title="Trimmed", slug=slug, ingestion_date=d, drift=drift),
         encoding="utf-8",
     )
 
@@ -286,15 +353,36 @@ def _inline(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\n", " ").strip()
 
 
+def _render_drift_footer(drift: dict[str, int]) -> str:
+    """Render the routing-drift telemetry footer for the trimmed file (#66).
+
+    A durable, greppable per-ingest record of LLM-bucket vs pattern disagreement,
+    so model drift is watchable over time:
+      - qa_with_chaff: chunks the LLM tagged `qa` that a strong chaff signal
+        overrode to `trimmed` (the conservative backstop fired).
+      - trimmed_without_chaff: chunks the LLM tagged `trimmed` that no pattern
+        chaff signal would have caught (recorded, not acted on).
+    """
+    return (
+        "\n---\n\n"
+        f"_Routing drift (LLM bucket vs pattern): "
+        f"{drift['qa_with_chaff']} qa→trimmed override(s) on strong chaff signal; "
+        f"{drift['trimmed_without_chaff']} llm-trimmed chunk(s) with no pattern signal._\n"
+    )
+
+
 def _render_overflow_file(
-    overflow: list[Overflow], *, title: str, slug: str, ingestion_date: date
+    overflow: list[Overflow], *, title: str, slug: str, ingestion_date: date,
+    drift: dict[str, int] | None = None,
 ) -> str:
     """Render an overflow markdown file — one ## section per overflow chunk with its
     citation header. Used for both `qa` (substantive) and `trimmed` (chaff) files;
-    the only difference is the heading."""
+    the only difference is the heading. The trimmed file also carries a drift
+    telemetry footer (#66) when `drift` is supplied."""
     header = f"# {title} — {slug} ({ingestion_date.isoformat()})\n\n"
+    footer = _render_drift_footer(drift) if drift is not None else ""
     if not overflow:
-        return header + "No overflow chunks from this ingestion.\n"
+        return header + "No overflow chunks from this ingestion.\n" + footer
 
     sections: list[str] = [header]
     for i, ov in enumerate(overflow, start=1):
@@ -304,7 +392,7 @@ def _render_overflow_file(
             + (f" ({c.position})" if c.position else "")
             + f"\n\n_Reason: {ov.reason}_\n\n{c.text.strip()}\n"
         )
-    return "\n".join(sections)
+    return "\n".join(sections) + footer
 
 
 # ---- consumer side ----
