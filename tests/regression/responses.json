@@ -1,0 +1,19 @@
+{
+  "_comment": "Record/replay LLM fixture for the S0 overflow-routing regression harness. Keys are sha1(chunk.text) for chunks produced by the extractors over tests/regression/corpora/. Values are the raw LLM response string the classifier would receive. Captured once to represent live classifier behavior; refresh deliberately when corpora change. See README.md.",
+
+  "5dc0408f2613b0714e04627889f42ad0a7095e50": "{\"choice\": \"overflow\", \"reason\": \"passage is a document header/scope statement with no discrete fact suitable for a single flashcard\"}",
+  "024a5fbc309651d83ec76f2d51504a25192604f7": "{\"choice\": \"overflow\", \"reason\": \"Passage is a table of contents listing; no single flashcard-relevant fact to extract.\"}",
+  "7d59457dc76e0bfcc424b1143e5b285645f75a05": "{\"choice\": \"AT Basic\", \"fields\": {\"Front\": \"What does the USB-C connector shape guarantee about data rate and power?\", \"Back\": \"Nothing on its own; USB-C is a connector shape, and data rate and power level depend on the cable's certified specification.\"}}",
+  "a68d13c2e2207c116e960e065e46a36e23bfaaf7": "{\"choice\": \"AT Table\", \"rows\": [{\"key\": \"DP 1.2\", \"attrs\": [{\"name\": \"Link rate\", \"value\": \"HBR2\"}, {\"name\": \"Max bandwidth\", \"value\": \"21.6 Gbps\"}]}, {\"key\": \"DP 1.4\", \"attrs\": [{\"name\": \"Link rate\", \"value\": \"HBR3\"}, {\"name\": \"Max bandwidth\", \"value\": \"32.4 Gbps\"}]}]}",
+  "8b2a2839b3ef43650028978e979f699beb13501c": "{\"choice\": \"overflow\", \"reason\": \"passage is a list of reference links\"}",
+
+  "b8e259133417edd25fb0a7567098b82136278f33": "{\"choice\": \"AT Basic\", \"fields\": {\"Front\": \"What is the mitochondrion's primary function?\", \"Back\": \"It generates most of the cell's supply of ATP, used throughout the cell as a source of chemical energy.\"}}",
+  "d8e76f75ee3786ab34c796cc460ee8f66b24b6a6": "{\"choice\": \"overflow\", \"reason\": \"passage holds multiple distinct facts that cannot fit one card\"}",
+  "8258e03082c6ff14162fea54592ad5b50a543780": "{\"choice\": \"overflow\", \"reason\": \"passage is a bibliography entry / journal citation\"}",
+  "8aa6339aab1b029f5fb4e88450c06591526d9409": "{\"choice\": \"overflow\", \"reason\": \"passage states a citation count with no factual content\"}",
+  "3d0dcc685bbba68b5ebec0ae04c393376186a054": "{\"choice\": \"overflow\", \"reason\": \"author names and affiliations\"}",
+
+  "228dc2934be0e2d12a8610d14199b4ba4e6c2266": "{\"choice\": \"overflow\", \"reason\": \"header block with author names and affiliations\"}",
+  "a1e97dbf59880f3e81ae2461c86d1fce3ebbd344": "{\"choice\": \"AT Basic\", \"fields\": {\"Front\": \"What social ability do Octopus vulgaris individuals show in the wild?\", \"Back\": \"They can recognise and remember other octopuses, telling familiar neighbours apart from unfamiliar strangers.\"}}",
+  "14cd96ef40fe137bfc49115ef916d999cc643695": "{\"choice\": \"overflow\", \"reason\": \"passage is a bibliography entry\"}"
+}
