@@ -142,8 +142,8 @@ _CHAFF_SIGNALS = (
 )
 
 
-def overflow_bucket(reason: str) -> str:
-    """Route an Overflow's reason to either 'qa' (substantive) or 'trimmed' (chaff).
+def overflow_bucket(reason: str, bucket: str | None = None) -> str:
+    """Route an Overflow to either 'qa' (substantive) or 'trimmed' (chaff).
 
     Substantive overflow is content the classifier wanted to make a card from but
     couldn't quite fit — worth keeping next to the queue as reference material.
@@ -151,11 +151,17 @@ def overflow_bucket(reason: str) -> str:
     section headers, author lists, transitional prose) — useful for spot-checking
     that nothing important was dropped, but disposable once verified.
 
-    The classifier emits a free-text reason for every overflow except for a small
-    set of classifier-generated prefixes (`exceeds_budget:`, `invalid_response:`,
-    `llm_error:`, `no_shape_fit`). The classifier-emitted reasons are *always*
-    substantive — they fired because real content didn't fit a shape's budget.
-    LLM-emitted reasons we pattern-match against keyword lists.
+    Precedence (#65) — classifier-prefix > LLM bucket > pattern-match:
+
+    1. Classifier-mechanical prefixes (`exceeds_budget:`, `invalid_response:`,
+       `llm_error:`, `no_shape_fit`) are authoritative `qa`. They fire on real
+       content that didn't fit a budget or on a dispatch fault — mechanical facts,
+       not content judgments — so they win even if the LLM mislabels the bucket.
+    2. The LLM's self-tagged `bucket` ('qa'|'trimmed') is the primary content
+       signal when present and valid. `classify()` has already coerced any
+       missing/out-of-vocabulary value to None.
+    3. Otherwise fall back to reason pattern-matching (pre-#65 behavior), so a
+       run whose model didn't emit a bucket routes exactly as it did before.
 
     Default = qa. Unknown phrasings are kept rather than discarded — easier to
     extend `_CHAFF_SIGNALS` as new patterns appear than to recover content lost
@@ -163,6 +169,8 @@ def overflow_bucket(reason: str) -> str:
     """
     if reason.startswith(_SUBSTANTIVE_REASON_PREFIXES):
         return "qa"
+    if bucket in ("qa", "trimmed"):
+        return bucket
     lowered = reason.lower()
     # Chaff check runs first. The LLM frequently rationalizes why a
     # bibliographic / citation chunk overflowed by saying it "exceeds field
@@ -212,8 +220,8 @@ def write_queue(
     qa_path.parent.mkdir(parents=True, exist_ok=True)
     trimmed_path.parent.mkdir(parents=True, exist_ok=True)
 
-    qa_overflows = [ov for ov in overflow if overflow_bucket(ov.reason) == "qa"]
-    trimmed_overflows = [ov for ov in overflow if overflow_bucket(ov.reason) == "trimmed"]
+    qa_overflows = [ov for ov in overflow if overflow_bucket(ov.reason, ov.bucket) == "qa"]
+    trimmed_overflows = [ov for ov in overflow if overflow_bucket(ov.reason, ov.bucket) == "trimmed"]
 
     queue_path.write_text(_render_queue(tagged, deck=deck), encoding="utf-8")
     qa_path.write_text(

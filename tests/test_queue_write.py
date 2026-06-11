@@ -414,6 +414,48 @@ def test_overflow_bucket_defaults_unknown_phrasings_to_qa() -> None:
     assert overflow_bucket("") == "qa"
 
 
+# ---- LLM self-tagged bucket as primary signal (#65) ----
+
+
+def test_overflow_bucket_llm_trimmed_routes_novel_chaff_without_signal_edits() -> None:
+    """The #65 payoff: a chaff phrasing absent from `_CHAFF_SIGNALS` still routes
+    to trimmed when the LLM self-tags bucket='trimmed' — zero signal-list edits.
+
+    The reason text below matches no entry in `_CHAFF_SIGNALS` (proven by the
+    bucket=None assertion: pattern-match alone defaults it to qa). The LLM bucket
+    flips it to trimmed."""
+    novel = "this is a pull-quote sidebar repeating a sentence from the body verbatim"
+    assert overflow_bucket(novel) == "qa"  # pattern-match alone: no signal hit
+    assert overflow_bucket(novel, "trimmed") == "trimmed"  # LLM bucket is primary
+
+
+def test_overflow_bucket_llm_qa_keeps_borderline_content() -> None:
+    """A reason with no chaff signal that the LLM tags qa stays qa (and would
+    anyway by default) — the bucket makes the intent explicit rather than relying
+    on the default."""
+    assert overflow_bucket("a dense paragraph with three interlocking facts", "qa") == "qa"
+
+
+def test_overflow_bucket_missing_or_garbage_bucket_falls_back_to_pattern_match() -> None:
+    """Missing/invalid bucket → pre-#65 behavior. None and out-of-vocabulary
+    values both defer to reason pattern-matching, so a run whose model omitted
+    the field routes exactly as it did before #65."""
+    # chaff signal in the reason, no bucket → trimmed (pattern-match)
+    assert overflow_bucket("passage is a bibliography entry", None) == "trimmed"
+    assert overflow_bucket("passage is a bibliography entry", "banana") == "trimmed"
+    # no signal, no/garbage bucket → qa default
+    assert overflow_bucket("a novel phrasing", None) == "qa"
+    assert overflow_bucket("a novel phrasing", "") == "qa"
+
+
+def test_overflow_bucket_classifier_prefix_beats_llm_bucket() -> None:
+    """Precedence: classifier-mechanical prefix > LLM bucket. A real card that
+    failed a budget must stay qa even if the LLM mislabels it trimmed — the
+    prefix is a mechanical fact, not a content judgment."""
+    assert overflow_bucket("exceeds_budget: Back is 250 chars, limit 200", "trimmed") == "qa"
+    assert overflow_bucket("llm_error: TimeoutError", "trimmed") == "qa"
+
+
 def test_write_queue_splits_overflow_between_qa_and_trimmed(tmp_path: Path) -> None:
     """End-to-end split: mixed overflow batch routes each chunk to the right
     file. Substantive overflows land in the qa file with their text; trimmed

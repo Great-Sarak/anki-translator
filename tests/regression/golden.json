@@ -6,7 +6,7 @@
       "extractor": "manual",
       "chunk_count": 5,
       "dispatched_count": 5,
-      "prompt_token_chars": 16060,
+      "prompt_token_chars": 21480,
       "counts": {
         "card": 2,
         "qa": 0,
@@ -61,7 +61,7 @@
       "extractor": "url",
       "chunk_count": 5,
       "dispatched_count": 5,
-      "prompt_token_chars": 16011,
+      "prompt_token_chars": 21431,
       "counts": {
         "card": 1,
         "qa": 1,
@@ -115,7 +115,7 @@
       "extractor": "pdf",
       "chunk_count": 3,
       "dispatched_count": 3,
-      "prompt_token_chars": 9579,
+      "prompt_token_chars": 12831,
       "counts": {
         "card": 1,
         "qa": 0,
