@@ -60,8 +60,8 @@
       "name": "mitochondrion",
       "extractor": "url",
       "chunk_count": 5,
-      "dispatched_count": 5,
-      "prompt_token_chars": 21431,
+      "dispatched_count": 2,
+      "prompt_token_chars": 8633,
       "counts": {
         "card": 1,
         "qa": 1,
@@ -88,25 +88,25 @@
           "position": "#references",
           "routing": "trimmed",
           "bucket": "trimmed",
-          "reason": "passage is a bibliography entry / journal citation",
+          "reason": "extractor: pre-filtered references",
           "note_type": null,
-          "dispatched": true
+          "dispatched": false
         },
         {
           "position": "#cited-by",
           "routing": "trimmed",
           "bucket": "trimmed",
-          "reason": "passage states a citation count with no factual content",
+          "reason": "extractor: pre-filtered cited-by",
           "note_type": null,
-          "dispatched": true
+          "dispatched": false
         },
         {
           "position": "#author-information",
           "routing": "trimmed",
           "bucket": "trimmed",
-          "reason": "author names and affiliations",
+          "reason": "extractor: pre-filtered author-info",
           "note_type": null,
-          "dispatched": true
+          "dispatched": false
         }
       ]
     },
