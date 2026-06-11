@@ -294,8 +294,8 @@ def write_queue(
     trimmed_path.parent.mkdir(parents=True, exist_ok=True)
 
     decisions = [(ov, classify_overflow_bucket(ov.reason, ov.bucket)) for ov in overflow]
-    qa_overflows = [ov for ov, dec in decisions if dec.bucket == "qa"]
-    trimmed_overflows = [ov for ov, dec in decisions if dec.bucket == "trimmed"]
+    qa_overflows = [(ov, dec) for ov, dec in decisions if dec.bucket == "qa"]
+    trimmed_overflows = [(ov, dec) for ov, dec in decisions if dec.bucket == "trimmed"]
     drift = {
         "qa_with_chaff": sum(1 for _, dec in decisions if dec.disagreement == "qa_with_chaff"),
         "trimmed_without_chaff": sum(1 for _, dec in decisions if dec.disagreement == "trimmed_without_chaff"),
@@ -382,26 +382,46 @@ def _render_drift_footer(drift: dict[str, int]) -> str:
     )
 
 
+def _stage_label(reason: str, decision: BucketDecision) -> str:
+    """Human-readable rejection stage for an overflow item.
+
+    Recovers *which* stage routed a chunk out of the queue — otherwise only
+    inferable by eye from the reason string. Three rejection points:
+    structural pre-filter (extractor, pre-LLM, zero tokens), classifier-mechanical
+    (budget/shape/parse faults), and the LLM's content judgment — plus the S2
+    backstop when it downgrades an LLM `qa` to `trimmed`.
+    """
+    if reason.startswith(_EXTRACTOR_REASON_PREFIX):
+        return "extractor (structural pre-filter, no LLM call)"
+    if reason.startswith(_SUBSTANTIVE_REASON_PREFIXES):
+        return "classifier (mechanical: budget/shape/parse)"
+    if decision.downgraded:
+        return "LLM → backstop downgrade (chaff signal)"
+    return "LLM (content judgment)"
+
+
 def _render_overflow_file(
-    overflow: list[Overflow], *, title: str, slug: str, ingestion_date: date,
-    drift: dict[str, int] | None = None,
+    overflow: list[tuple[Overflow, BucketDecision]], *, title: str, slug: str,
+    ingestion_date: date, drift: dict[str, int] | None = None,
 ) -> str:
     """Render an overflow markdown file — one ## section per overflow chunk with its
     citation header. Used for both `qa` (substantive) and `trimmed` (chaff) files;
-    the only difference is the heading. The trimmed file also carries a drift
-    telemetry footer (#66) when `drift` is supplied."""
+    the only difference is the heading. Each item carries a `_Stage:_` line naming
+    the rejection point (#66 backstop activity included). The trimmed file also
+    carries a drift telemetry footer (#66) when `drift` is supplied."""
     header = f"# {title} — {slug} ({ingestion_date.isoformat()})\n\n"
     footer = _render_drift_footer(drift) if drift is not None else ""
     if not overflow:
         return header + "No overflow chunks from this ingestion.\n" + footer
 
     sections: list[str] = [header]
-    for i, ov in enumerate(overflow, start=1):
+    for i, (ov, dec) in enumerate(overflow, start=1):
         c = ov.chunk
         sections.append(
             f"## {i}. From {c.source}"
             + (f" ({c.position})" if c.position else "")
-            + f"\n\n_Reason: {ov.reason}_\n\n{c.text.strip()}\n"
+            + f"\n\n_Stage: {_stage_label(ov.reason, dec)}_  \n"
+            + f"_Reason: {ov.reason}_\n\n{c.text.strip()}\n"
         )
     return "\n".join(sections) + footer
 
