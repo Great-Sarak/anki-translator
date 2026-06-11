@@ -82,8 +82,9 @@ def test_prefiltered_chunk_is_trimmed_with_zero_token_cost() -> None:
 
     shapes = load_shapes(harness.SHAPES_PATH)
     responses = harness._load_responses()
-    # Take a real corpus chunk that currently dispatches.
-    chunk = harness._extract_octopus()[0]
+    # Take a real corpus chunk that dispatches (octopus[1] is the body fact;
+    # octopus[0]/[2] are pre-filtered by the S4 PDF rules).
+    chunk = harness._extract_octopus()[1]
     unflagged_record, unflagged_chars = harness._route_chunk(chunk, shapes, responses)
     assert unflagged_record["dispatched"] is True
     assert unflagged_chars == len(build_prompt(chunk, shapes)) > 0
