@@ -54,15 +54,30 @@ def test_token_metric_counts_only_dispatched_chunks() -> None:
 def test_clean_corpora_have_zero_routing_drift() -> None:
     """#66 acceptance: the clean baseline corpora produce no LLM-vs-pattern
     disagreement. (Their captured responses carry no LLM bucket, so routing goes
-    through pattern-match and the backstop never fires.)"""
+    through pattern-match and the backstop never fires.)
+
+    This drift-free property holds only for the synthetic *clean* fixtures, which
+    were hand-built to never trip the S2 safety net. Real originals legitimately
+    exercise it — the live model self-tags chunks ``trimmed`` whose reasons don't
+    match a chaff pattern (``trimmed_without_chaff``), which #66 records as
+    telemetry, not failure. The real baseline's routing is locked instead by the
+    deterministic ``golden.originals.json`` snapshot match above."""
     from anki_translator.classifier import Overflow, classify
     from anki_translator.config import load_shapes
     from anki_translator.queue import classify_overflow_bucket
 
+    if harness.using_originals():
+        pytest.skip("zero-drift invariant is a synthetic-fixture property; real "
+                    "corpora exercise the S2 backstop by design")
+
     shapes = load_shapes(harness.SHAPES_PATH)
     responses = harness._load_responses()
-    for name, _extractor, extract in harness.CORPORA:
+    for name, _extractor, extract in harness._corpora():
         for chunk in extract():
+            # Pre-filtered chunks bypass the LLM in production (dispatched=False),
+            # so they carry no captured response and no LLM-vs-pattern question.
+            if harness._prefilter(chunk) is not None:
+                continue
             key = harness._chunk_key(chunk)
             result = classify(chunk, shapes, llm=lambda _p, r=responses[key]: r)
             if isinstance(result, Overflow):
@@ -82,9 +97,11 @@ def test_prefiltered_chunk_is_trimmed_with_zero_token_cost() -> None:
 
     shapes = load_shapes(harness.SHAPES_PATH)
     responses = harness._load_responses()
-    # Take a real corpus chunk that dispatches (octopus[1] is the body fact;
-    # octopus[0]/[2] are pre-filtered by the S4 PDF rules).
-    chunk = harness._extract_octopus()[1]
+    # Take the first octopus chunk that actually dispatches (no structural
+    # pre-filter). On the 3-block stub that's octopus[1], the body fact; on the
+    # real PDF it's whichever body chunk comes first — index-independent so the
+    # test holds in both stub and originals mode.
+    chunk = next(c for c in harness._extract_octopus() if prefilter_overflow(c) is None)
     unflagged_record, unflagged_chars = harness._route_chunk(chunk, shapes, responses)
     assert unflagged_record["dispatched"] is True
     assert unflagged_chars == len(build_prompt(chunk, shapes)) > 0

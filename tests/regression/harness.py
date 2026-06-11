@@ -56,31 +56,71 @@ from anki_translator.queue import overflow_bucket
 
 HERE = Path(__file__).parent
 CORPORA_DIR = HERE / "corpora"
-RESPONSES_PATH = HERE / "responses.json"
-GOLDEN_PATH = HERE / "golden.json"
+ORIGINALS_DIR = CORPORA_DIR / "originals"
 SHAPES_PATH = HERE.parent.parent / "config" / "shapes.yaml"
 
 SCHEMA_VERSION = 1
 
+# Originals mode (issue: real-corpora baseline) — when the full-size source files
+# are present in the gitignored ``corpora/originals/`` folder, the harness runs
+# against *them* instead of the committed synthetic stubs, and reads/writes the
+# ``*.originals.json`` fixture variant so the portable (CI) golden is never
+# clobbered. Each corpus falls back independently: present original wins, else
+# the stub. See README "Originals mode".
+RESPONSES_PATH = HERE / "responses.json"
+GOLDEN_PATH = HERE / "golden.json"
+RESPONSES_ORIGINALS_PATH = HERE / "responses.originals.json"
+GOLDEN_ORIGINALS_PATH = HERE / "golden.originals.json"
+
+
+def _src(name: str) -> Path:
+    """The original in ``corpora/originals/`` if it exists, else the committed stub."""
+    original = ORIGINALS_DIR / name
+    return original if original.exists() else CORPORA_DIR / name
+
+
+def using_originals() -> bool:
+    """True when at least one real original is present — selects the fixture variant."""
+    return ORIGINALS_DIR.is_dir() and any(
+        (ORIGINALS_DIR / n).exists()
+        for n in ("cable_identification.md", "octopus.pdf", "plos.pdf", "mitochondrion.html")
+    )
+
+
+def golden_path() -> Path:
+    return GOLDEN_ORIGINALS_PATH if using_originals() else GOLDEN_PATH
+
 
 def _extract_cable() -> list[Chunk]:
-    return manual.extract_file(CORPORA_DIR / "cable_identification.md")
+    return manual.extract_file(_src("cable_identification.md"))
 
 
 def _extract_mitochondrion() -> list[Chunk]:
-    html = (CORPORA_DIR / "mitochondrion.html").read_text(encoding="utf-8")
+    html = _src("mitochondrion.html").read_text(encoding="utf-8")
     return url.extract(html, "https://en.wikipedia.org/wiki/Mitochondrion")
 
 
 def _extract_octopus() -> list[Chunk]:
-    return pdf.extract(CORPORA_DIR / "octopus.pdf")
+    return pdf.extract(_src("octopus.pdf"))
 
 
-CORPORA = (
-    ("cable-identification", "manual", _extract_cable),
-    ("mitochondrion", "url", _extract_mitochondrion),
-    ("octopus", "pdf", _extract_octopus),
-)
+def _extract_plos() -> list[Chunk]:
+    # PLOS ONE printable URL serves application/pdf, so it routes through the PDF
+    # extractor exactly as cli.py does for a fetched PDF body. Only present in
+    # originals mode (no committed stub).
+    return pdf.extract(ORIGINALS_DIR / "plos.pdf")
+
+
+def _corpora() -> tuple[tuple[str, str, object], ...]:
+    """The active corpus list — adds PLOS as a 4th item when its original is present."""
+    corpora = [
+        ("cable-identification", "manual", _extract_cable),
+        ("mitochondrion", "url", _extract_mitochondrion),
+        ("octopus", "pdf", _extract_octopus),
+    ]
+    if (ORIGINALS_DIR / "plos.pdf").exists():
+        corpora.append(("plos", "pdf", _extract_plos))
+    return tuple(corpora)
 
 
 def _chunk_key(chunk: Chunk) -> str:
@@ -88,8 +128,18 @@ def _chunk_key(chunk: Chunk) -> str:
 
 
 def _load_responses() -> dict[str, str]:
+    """Committed stub responses, with the gitignored originals fixture merged on top.
+
+    Both are keyed by ``sha1(chunk.text)``, so a chunk only ever hits its own
+    entry; the merge lets a single run mix stub-backed and original-backed corpora
+    without collision.
+    """
     raw = json.loads(RESPONSES_PATH.read_text(encoding="utf-8"))
-    return {k: v for k, v in raw.items() if not k.startswith("_")}
+    merged = {k: v for k, v in raw.items() if not k.startswith("_")}
+    if RESPONSES_ORIGINALS_PATH.exists():
+        extra = json.loads(RESPONSES_ORIGINALS_PATH.read_text(encoding="utf-8"))
+        merged.update({k: v for k, v in extra.items() if not k.startswith("_")})
+    return merged
 
 
 def _prefilter(chunk: Chunk) -> Overflow | None:
@@ -148,7 +198,7 @@ def build_snapshot() -> dict:
     shapes = load_shapes(SHAPES_PATH)
     responses = _load_responses()
     corpora_out = []
-    for name, extractor, extract in CORPORA:
+    for name, extractor, extract in _corpora():
         chunks = extract()
         records = []
         prompt_chars = 0
@@ -172,13 +222,60 @@ def build_snapshot() -> dict:
 
 
 def load_golden() -> dict:
-    return json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+    return json.loads(golden_path().read_text(encoding="utf-8"))
 
 
 def write_golden(snapshot: dict) -> None:
-    GOLDEN_PATH.write_text(
+    golden_path().write_text(
         json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
+
+
+def record_responses() -> int:
+    """Capture live-classifier responses for the active corpora into the gitignored
+    ``responses.originals.json``.
+
+    Calls the real ``classifier._default_llm`` (``openclaw infer model run``) once
+    per dispatched chunk — the only step that touches the network. Pre-filtered
+    chunks (structural chaff, ``dispatched=False``) are skipped, exactly as in the
+    snapshot. Existing entries are reused so re-runs only fill gaps.
+    """
+    from anki_translator.classifier import _default_llm
+
+    shapes = load_shapes(SHAPES_PATH)
+    captured: dict[str, str] = {}
+    if RESPONSES_ORIGINALS_PATH.exists():
+        captured = {
+            k: v
+            for k, v in json.loads(RESPONSES_ORIGINALS_PATH.read_text(encoding="utf-8")).items()
+            if not k.startswith("_")
+        }
+    committed = {
+        k: v
+        for k, v in json.loads(RESPONSES_PATH.read_text(encoding="utf-8")).items()
+        if not k.startswith("_")
+    }
+    new_calls = 0
+    for name, _extractor, extract in _corpora():
+        for chunk in extract():
+            if _prefilter(chunk) is not None:
+                continue
+            key = _chunk_key(chunk)
+            if key in captured or key in committed:
+                continue
+            captured[key] = _default_llm(build_prompt(chunk, shapes))
+            new_calls += 1
+            print(f"  [{name}] recorded {key[:12]} ({new_calls} live calls)", file=sys.stderr)
+    payload = {
+        "_comment": "Live-classifier responses for the real originals (gitignored "
+        "source). Keyed by sha1(chunk.text). Regenerate with harness.py --record.",
+        **captured,
+    }
+    RESPONSES_ORIGINALS_PATH.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    print(f"wrote {RESPONSES_ORIGINALS_PATH} (+{new_calls} new)")
+    return 0
 
 
 def diff_message(current: dict, golden: dict) -> str:
@@ -194,14 +291,23 @@ def diff_message(current: dict, golden: dict) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="S0 overflow-routing regression harness")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--update", action="store_true", help="regenerate golden.json")
+    group.add_argument("--update", action="store_true", help="regenerate the active golden")
     group.add_argument("--check", action="store_true", help="diff vs golden; exit 1 on drift")
+    group.add_argument(
+        "--record",
+        action="store_true",
+        help="capture live-classifier responses for the originals (network; writes "
+        "responses.originals.json)",
+    )
     args = parser.parse_args(argv)
+
+    if args.record:
+        return record_responses()
 
     snapshot = build_snapshot()
     if args.update:
         write_golden(snapshot)
-        print(f"wrote {GOLDEN_PATH}")
+        print(f"wrote {golden_path()}")
         return 0
     if args.check:
         golden = load_golden()

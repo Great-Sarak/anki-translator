@@ -9,6 +9,13 @@ build/
 htmlcov/
 .coverage
 
+# Regression originals — full-size copyrighted source files used as the local
+# high-fidelity baseline, plus their derived live-classifier fixtures. The
+# committed stub corpora + golden.json remain the portable CI baseline.
+tests/regression/corpora/originals/
+tests/regression/responses.originals.json
+tests/regression/golden.originals.json
+
 # Runtime state — directories tracked via .gitkeep, contents ignored
 queue/*
 !queue/.gitkeep
