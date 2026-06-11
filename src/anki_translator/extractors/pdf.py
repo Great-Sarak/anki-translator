@@ -67,6 +67,43 @@ def _count_affiliation_markers(text: str) -> int:
     return sum(1 for marker in _AFFILIATION_MARKERS if marker in lowered)
 
 
+def _normalize_repeat(text: str) -> str:
+    """Normalize a block for cross-page repetition detection: drop digits (page
+    numbers, dates, volume/issue) and collapse whitespace, so a running header or
+    footer matches itself across pages despite the changing page number."""
+    return re.sub(r"\s+", " ", re.sub(r"\d+", "", text)).strip().lower()[:80]
+
+
+def _detect_running_blocks(doc: pymupdf.Document) -> set[str]:
+    """Normalized text of short blocks that recur on >=2 pages — running headers
+    and footers (journal masthead, the article title repeated per page, the page
+    footer). These are boilerplate chaff, and — critically — when multi-column
+    reading order interleaves them into a references section, they must NOT end
+    the references run. Long body prose is unique per page and never matches."""
+    if doc.page_count < 2:
+        return set()
+    pages: dict[str, set[int]] = {}
+    for page_num, page in enumerate(doc, start=1):
+        for block in page.get_text("blocks"):
+            if len(block) < 7 or block[6] != 0:
+                continue
+            text = block[4].strip()
+            if not text or len(text) > 150:
+                continue
+            pages.setdefault(_normalize_repeat(text), set()).add(page_num)
+    return {norm for norm, pgs in pages.items() if norm and len(pgs) >= 2}
+
+
+def _make_chunk(text: str, source_label: str, page_num: int, kind: str | None) -> Chunk:
+    metadata: dict[str, object] = {"filename": source_label, "page": page_num}
+    if kind:
+        metadata[PREFILTER_METADATA_KEY] = kind
+    return Chunk(
+        text=text, source=source_label, position=f"page {page_num}",
+        source_type="pdf", metadata=metadata,
+    )
+
+
 def _prefilter_kind(text: str, page_num: int, in_references: bool) -> tuple[str | None, bool]:
     """Classify a block as structural chaff. Returns (kind, in_references).
 
@@ -94,47 +131,58 @@ def _extract_doc(doc: pymupdf.Document, source_label: str) -> list[Chunk]:
     """Walk an open pymupdf Document and return Chunks. Caller owns doc lifetime.
 
     Structural-chaff blocks (references, acknowledgments, title-page author/
-    affiliation) are flagged via PREFILTER_METADATA_KEY rather than dropped, so
-    the pipeline routes them to trimmed without an LLM call (#67/#68).
+    affiliation, running headers/footers) are flagged via PREFILTER_METADATA_KEY
+    rather than dropped, so the pipeline routes them to trimmed without an LLM
+    call (#67/#68).
     """
     chunks: list[Chunk] = []
+    running = _detect_running_blocks(doc)
     in_references = False
+    ack_page: int | None = None  # page an acknowledgments run started on (page-bounded)
     for page_num, page in enumerate(doc, start=1):
-        blocks = page.get_text("blocks")
         # blocks is a list of (x0, y0, x1, y1, text, block_no, block_type)
-        for block in blocks:
+        for block in page.get_text("blocks"):
             # block_type == 1 is image; we want text only (type 0)
             if len(block) < 7 or block[6] != 0:
                 continue
             text = block[4].strip()
-            # Arm the references state when its heading appears, EVEN if the
-            # heading block is too short to emit: a standalone "REFERENCES" is
-            # ~10 chars (< MIN_CHUNK_CHARS) and used to be dropped by the length
-            # skip below before _prefilter_kind ever saw it — so in_references
-            # never flipped and the entire bibliography fell through to the LLM
-            # (#68 follow-up). A heading inline with content (a long block) is
-            # left to _prefilter_kind below, which flags AND emits it as before.
-            if _REFERENCES_HEADING_RE.match(text.lstrip()):
-                in_references = True
+
+            # Running header/footer: boilerplate chaff. Flag it (when long enough
+            # to emit), but keep it TRANSPARENT to section state — multi-column
+            # reading order interleaves it into the references stream, and it must
+            # not end an active references run (the #70-era two-column gap).
+            if _normalize_repeat(text) in running:
+                if len(text) >= MIN_CHUNK_CHARS:
+                    chunks.append(_make_chunk(text, source_label, page_num, "running-header"))
+                continue
+
+            # Section headings arm their run BEFORE the length skip — a standalone
+            # "REFERENCES"/"ACKNOWLEDGMENTS" heading is ~10-15 chars and would
+            # otherwise be dropped below before _prefilter_kind ever saw it, so
+            # the section body fell through to the LLM (#68 follow-up). A heading
+            # inline with content (a long block) still flows through _prefilter_kind.
+            head = text.lstrip()
+            if _REFERENCES_HEADING_RE.match(head):
+                in_references, ack_page = True, None
+            elif _ACK_HEADING_RE.match(head):
+                ack_page, in_references = page_num, False
+
             # Short layout noise (page numbers, column-split artifacts, a
-            # standalone heading) is never emitted as a chunk — and, critically,
-            # is skipped here WITHOUT ending an active references run, so a stray
-            # 2-char artifact between citations can't cut the bibliography short.
+            # standalone heading) is never emitted, and is skipped WITHOUT ending
+            # an active run so a stray artifact can't cut a section short.
             if len(text) < MIN_CHUNK_CHARS:
                 continue
+
             kind, in_references = _prefilter_kind(text, page_num, in_references)
-            metadata: dict[str, object] = {"filename": source_label, "page": page_num}
-            if kind:
-                metadata[PREFILTER_METADATA_KEY] = kind
-            chunks.append(
-                Chunk(
-                    text=text,
-                    source=source_label,
-                    position=f"page {page_num}",
-                    source_type="pdf",
-                    metadata=metadata,
-                )
-            )
+            # Acknowledgments body — prose with no citation shape. Flag blocks on
+            # the heading's page; the run is page-bounded so it can't swallow a
+            # later section that lacks its own heading.
+            if ack_page is not None and page_num != ack_page:
+                ack_page = None
+            if kind is None and ack_page == page_num and not in_references:
+                kind = "acknowledgments"
+
+            chunks.append(_make_chunk(text, source_label, page_num, kind))
     return chunks
 
 

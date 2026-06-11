@@ -284,3 +284,71 @@ def test_extract_arms_references_run_from_standalone_short_heading(tmp_path: Pat
     # The body fact is left for the classifier.
     body = [c for c in chunks if c.metadata.get(PREFILTER_METADATA_KEY) is None]
     assert len(body) == 1 and "recognition" in body[0].text
+
+
+def test_extract_running_header_survives_references_run_across_pages(tmp_path: Path) -> None:
+    """A running header repeated across pages is flagged as chaff AND kept
+    transparent to the references run, so a citation on a later page stays flagged
+    instead of the run dying at the first interleaved header — the two-column /
+    page-break gap (#68 follow-up)."""
+    path = tmp_path / "twocol.pdf"
+    doc = pymupdf.open()
+    header = "Journal of Test Studies, Vol 4, 2024"  # identical on both pages → running header
+    p1 = doc.new_page()
+    p1.insert_textbox(pymupdf.Rect(72, 72, 540, 110), "REFERENCES", fontsize=11, fontname="helv")
+    p1.insert_textbox(
+        pymupdf.Rect(72, 140, 540, 240),
+        "1. Smith J, Doe A (2019). Recognition in octopuses. J Mar Biol 4:1-9.",
+        fontsize=11, fontname="helv",
+    )
+    p1.insert_textbox(pymupdf.Rect(72, 740, 540, 780), header, fontsize=11, fontname="helv")
+    p2 = doc.new_page()
+    p2.insert_textbox(
+        pymupdf.Rect(72, 72, 540, 180),
+        "2. Jones K, Lee R (2020). Cephalopod cognition revisited. Anim Behav 5:11-20.",
+        fontsize=11, fontname="helv",
+    )
+    p2.insert_textbox(pymupdf.Rect(72, 740, 540, 780), header, fontsize=11, fontname="helv")
+    doc.save(path)
+    doc.close()
+
+    chunks = extract(path)
+    bib = [c for c in chunks if c.metadata.get(PREFILTER_METADATA_KEY) == "bibliography"]
+    rh = [c for c in chunks if c.metadata.get(PREFILTER_METADATA_KEY) == "running-header"]
+    # Both citations flagged, despite the header interleaved between them.
+    assert len(bib) == 2
+    assert {c.metadata["page"] for c in bib} == {1, 2}
+    # The header is recognized as boilerplate chaff (so it's also out of the LLM's way).
+    assert rh and all(header in c.text for c in rh)
+
+
+def test_extract_flags_acknowledgments_body_and_is_page_bounded(tmp_path: Path) -> None:
+    """A standalone 'ACKNOWLEDGMENTS' heading (short, length-skipped) arms a
+    page-bounded run, so the funding/declarations body that follows is flagged
+    instead of paying LLM cost — while a real fact on a later page is untouched."""
+    path = tmp_path / "ack.pdf"
+    doc = pymupdf.open()
+    p1 = doc.new_page()
+    p1.insert_textbox(pymupdf.Rect(72, 72, 540, 110), "ACKNOWLEDGMENTS", fontsize=11, fontname="helv")
+    p1.insert_textbox(
+        pymupdf.Rect(72, 140, 540, 280),
+        "This work was supported by the Office of Naval Research under grant "
+        "N00014-23-1-2083. The authors declare no competing interests.",
+        fontsize=11, fontname="helv",
+    )
+    p2 = doc.new_page()
+    p2.insert_textbox(
+        pymupdf.Rect(72, 72, 540, 200),
+        "Octopuses can distinguish familiar neighbours from unfamiliar strangers "
+        "in their natural reef habitat.",
+        fontsize=11, fontname="helv",
+    )
+    doc.save(path)
+    doc.close()
+
+    chunks = extract(path)
+    ack = [c for c in chunks if c.metadata.get(PREFILTER_METADATA_KEY) == "acknowledgments"]
+    assert len(ack) == 1 and "Naval Research" in ack[0].text
+    # The body fact on page 2 (past the ack page) is NOT swept up.
+    body = [c for c in chunks if c.metadata.get(PREFILTER_METADATA_KEY) is None]
+    assert any("distinguish familiar" in c.text for c in body)
