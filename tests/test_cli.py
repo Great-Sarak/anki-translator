@@ -474,3 +474,20 @@ def test_card_requires_from_text(monkeypatch, tmp_path: Path, capsys) -> None:
             "--trimmed-dir", str(tmp_path / "trimmed"),
         ])
     assert exc_info.value.code == 2
+
+
+# --- ANKI_TRANSLATOR_STATE_DIR (install relocation, anki-manager #32) ---
+
+def test_state_default_unset_is_cwd_relative(monkeypatch) -> None:
+    from anki_translator.cli import _state_default
+    monkeypatch.delenv("ANKI_TRANSLATOR_STATE_DIR", raising=False)
+    assert _state_default("queue") == "queue"
+    assert _state_default("qa") == "qa"
+    assert _state_default("trimmed") == "trimmed"
+
+
+def test_state_default_rooted_when_env_set(monkeypatch) -> None:
+    from anki_translator.cli import _state_default
+    monkeypatch.setenv("ANKI_TRANSLATOR_STATE_DIR", "/var/lib/anki-translator")
+    assert _state_default("queue") == "/var/lib/anki-translator/queue"
+    assert _state_default("trimmed") == "/var/lib/anki-translator/trimmed"
