@@ -107,6 +107,19 @@ def _extract_doc(doc: pymupdf.Document, source_label: str) -> list[Chunk]:
             if len(block) < 7 or block[6] != 0:
                 continue
             text = block[4].strip()
+            # Arm the references state when its heading appears, EVEN if the
+            # heading block is too short to emit: a standalone "REFERENCES" is
+            # ~10 chars (< MIN_CHUNK_CHARS) and used to be dropped by the length
+            # skip below before _prefilter_kind ever saw it — so in_references
+            # never flipped and the entire bibliography fell through to the LLM
+            # (#68 follow-up). A heading inline with content (a long block) is
+            # left to _prefilter_kind below, which flags AND emits it as before.
+            if _REFERENCES_HEADING_RE.match(text.lstrip()):
+                in_references = True
+            # Short layout noise (page numbers, column-split artifacts, a
+            # standalone heading) is never emitted as a chunk — and, critically,
+            # is skipped here WITHOUT ending an active references run, so a stray
+            # 2-char artifact between citations can't cut the bibliography short.
             if len(text) < MIN_CHUNK_CHARS:
                 continue
             kind, in_references = _prefilter_kind(text, page_num, in_references)

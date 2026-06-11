@@ -248,3 +248,39 @@ def test_extract_flags_references_and_affiliations_not_body(tmp_path: Path) -> N
     chunks = extract(path)
     flags = [c.metadata.get(PREFILTER_METADATA_KEY) for c in chunks]
     assert flags == ["author-affiliations", None, "bibliography"]
+
+
+def test_extract_arms_references_run_from_standalone_short_heading(tmp_path: Path) -> None:
+    """A standalone 'REFERENCES' heading is ~10 chars — shorter than
+    MIN_CHUNK_CHARS. It must still arm the references run so the citations below
+    are pre-filtered as bibliography (zero LLM cost), instead of the whole list
+    falling through to the classifier (#68 follow-up). A short page-number
+    artifact between citations must NOT end the run."""
+    path = tmp_path / "paper.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    top = 72.0
+    for text in [
+        "Octopuses can distinguish familiar neighbours from unfamiliar strangers "
+        "in their natural reef habitat, a sign of individual recognition.",   # body fact
+        "REFERENCES",                                                          # standalone short heading
+        "Boal JG (2006) Social recognition in cephalopods. Anim Cogn 9:171-180.",
+        "1124",                                                                # short layout artifact
+        "Tricarico E, Borrelli L (2011) I know my neighbour. PLoS ONE 6:e18710.",
+    ]:
+        page.insert_textbox(pymupdf.Rect(72, top, 540, top + 70), text, fontsize=11, fontname="helv")
+        top += 100.0
+    doc.save(path)
+    doc.close()
+
+    chunks = extract(path)
+    # The short heading and the page-number artifact are below MIN_CHUNK_CHARS,
+    # so neither is emitted as a chunk.
+    assert all(c.text not in ("REFERENCES", "1124") for c in chunks)
+    # Both citations are flagged bibliography — proving the short heading armed
+    # the run and the interstitial artifact did not cut it short.
+    bibliography = [c for c in chunks if c.metadata.get(PREFILTER_METADATA_KEY) == "bibliography"]
+    assert len(bibliography) == 2
+    # The body fact is left for the classifier.
+    body = [c for c in chunks if c.metadata.get(PREFILTER_METADATA_KEY) is None]
+    assert len(body) == 1 and "recognition" in body[0].text
