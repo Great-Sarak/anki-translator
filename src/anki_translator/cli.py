@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -31,6 +32,18 @@ from .queue import (
 )
 
 
+def _state_default(name: str) -> str:
+    """Default output dir for an overflow lane (``queue``/``qa``/``trimmed``).
+
+    Rooted at ``$ANKI_TRANSLATOR_STATE_DIR`` when set — the agent-independent
+    install (anki-manager #32) points this at ``/var/lib/anki-translator/`` so the
+    tool writes system state, not into its package tree. Unset → a cwd-relative
+    dir, preserving the in-tree dev behavior. ``--queue-dir`` etc. still override.
+    """
+    base = os.environ.get("ANKI_TRANSLATOR_STATE_DIR")
+    return str(Path(base) / name) if base else name
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="anki-translator")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -47,9 +60,9 @@ def main(argv: list[str] | None = None) -> int:
     p_ing.add_argument("--shapes", default="config/shapes.yaml")
     p_ing.add_argument("--tagger-config", default="config/tagger.yaml",
                        help="Optional tagger config (filter rules for seed vocabulary). Missing file → defaults.")
-    p_ing.add_argument("--queue-dir", default="queue")
-    p_ing.add_argument("--qa-dir", default="qa")
-    p_ing.add_argument("--trimmed-dir", default="trimmed",
+    p_ing.add_argument("--queue-dir", default=_state_default("queue"))
+    p_ing.add_argument("--qa-dir", default=_state_default("qa"))
+    p_ing.add_argument("--trimmed-dir", default=_state_default("trimmed"),
                        help="Directory for trimmed-chaff overflow (TOC, citations, section headers). "
                             "Substantive overflow still lands in --qa-dir.")
 
@@ -76,9 +89,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Tag to apply to the note (repeatable)")
     p_card.add_argument("--shapes", default="config/shapes.yaml")
     p_card.add_argument("--tagger-config", default="config/tagger.yaml")
-    p_card.add_argument("--queue-dir", default="queue")
-    p_card.add_argument("--qa-dir", default="qa")
-    p_card.add_argument("--trimmed-dir", default="trimmed")
+    p_card.add_argument("--queue-dir", default=_state_default("queue"))
+    p_card.add_argument("--qa-dir", default=_state_default("qa"))
+    p_card.add_argument("--trimmed-dir", default=_state_default("trimmed"))
 
     p_com = sub.add_parser("commit", help="Parse a reviewed queue file and create notes via anki-manager")
     p_com.add_argument("queue_file", help="Path to a queue/<date>-<slug>.md file")
