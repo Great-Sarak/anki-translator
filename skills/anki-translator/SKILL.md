@@ -44,7 +44,14 @@ If `--tag` is omitted, the helper generates `anki-translator-YYYYMMDD-HHMMSS`.
 
 ## Profile Selection
 
-Until per-user profile switching lands in `anki-manager`, writes go to the currently active Anki profile. When profile routing is available, pass the requester's slug through the caller/workflow that invokes this skill; do not guess another user's profile.
+Until per-user profile switching lands in `anki-manager`, writes go to the currently active Anki profile, so no slug reaches this skill today.
+
+When profile routing does land, keep two identities separate:
+
+- **Authorization identity** — the *calling* identity (the Unix user running this skill, e.g. `teva`). This is what polkit and `allowlist.toml` check for `anki-manager start` and deck writes. In a subagent dispatch this is correctly the agent, not the human.
+- **Destination identity** — whose Anki profile the cards belong to (the **target user slug**, e.g. `sorotassu`). In a subagent call the human is never the direct requester, so this must arrive as an **explicit parameter threaded as data** through the caller/workflow — never inferred from the calling identity.
+
+A routing-capable build must **error if it is given no target slug** rather than silently falling back to the active profile; silent fallback is how cross-user contamination sneaks in once more than one profile exists. Do not guess another user's profile.
 
 ## Useful Direct Commands
 
