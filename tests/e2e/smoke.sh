@@ -15,6 +15,11 @@
 #                                 set 1 for sequential debug runs)
 #   ANKI_TRANSLATOR_URL         — defaults to Wikipedia Mitochondrion article
 #   ANKI_TEST_DECK              — defaults to Myrzka::Testing
+#
+# Works from any cwd: config resolves from the package install (#88) and the
+# queue/qa/trimmed files land in $ANKI_TRANSLATOR_STATE_DIR when set (the /opt
+# install points it at /var/lib/anki-translator/), else cwd-relative dirs.
+# On a shared gateway, set ANKI_TRANSLATOR_CONCURRENCY=1 to avoid rate-limits.
 
 set -euo pipefail
 
@@ -41,23 +46,28 @@ read -r
 
 echo
 echo "=== 5. Commit ==="
-anki-translator commit "$QUEUE_FILE"
+COMMIT_JSON=$(anki-translator commit "$QUEUE_FILE")
+echo "$COMMIT_JSON"
+# Use the archive path the tool reports, not a cwd-relative guess — under the
+# /opt install the queue lives in $ANKI_TRANSLATOR_STATE_DIR, not ./queue (#88).
+ARCHIVED=$(echo "$COMMIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('archived_to',''))")
 
 echo
 echo "=== 6. Verify in Anki ==="
 echo "Run: anki-manager call findNotes 'query=tag:$TAG'"
 echo "Or browse 'tag:$TAG' in Anki Desktop."
-echo "Compare the count to the surviving block count in queue/committed/."
+echo "Compare the count to the surviving block count in $ARCHIVED."
 
 echo
 echo "=== 7. Retry idempotence ==="
-ARCHIVED="queue/committed/$(basename "$QUEUE_FILE")"
-if [[ -f "$ARCHIVED" ]]; then
+if [[ -n "$ARCHIVED" && -f "$ARCHIVED" ]]; then
   echo "Retrying commit on archived file: $ARCHIVED"
-  anki-translator commit "$ARCHIVED" || echo "(expected: no duplicates created)"
+  anki-translator commit "$ARCHIVED" || echo "(expected: no new notes created)"
+else
+  echo "WARNING: could not resolve the archived file from commit output; skipping retry."
 fi
 
 echo
 echo "=== Done ==="
-echo "If steps 6's note count matches the surviving block count in $ARCHIVED,"
-echo "and step 7 produced zero new notes, v0.1 is shippable."
+echo "If step 6's note count matches the surviving block count in $ARCHIVED,"
+echo "and step 7 produced zero NEW notes (created: 0), v0.1 is shippable."
