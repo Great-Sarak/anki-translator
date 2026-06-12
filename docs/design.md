@@ -1,15 +1,22 @@
 # Anki-Translator — Design
 
-**Status**: design, pre-implementation
-**Date**: 2026-05-27
+**Status**: implemented — v0.1 shipped (2026-06-11)
+**Date**: 2026-05-27 (original design; as-built deltas noted inline)
 **Paired with**: anki-manager (existing)
+
+> **As-built note.** This doc is the original pre-implementation design, retained
+> for its architecture and decisions log. The one substantive divergence is
+> overflow handling: the design called for a single `qa/` file, but v1 splits
+> overflow into **two lanes** — `qa/` (substantive reference, kept) and
+> `trimmed/` (chaff, disposable audit). The three-lane model (queue/qa/trimmed)
+> is described inline below and authoritatively in the README.
 
 ## Purpose
 
 Convert source documents (URLs, PDFs, books, journal articles, manual notes) into:
 
 1. Anki flashcards, via a human-reviewed queue
-2. A companion Q&A markdown file for content that doesn't fit flashcard shapes
+2. Companion overflow markdown for content that doesn't fit flashcard shapes — split into `qa/` (substantive reference) and `trimmed/` (chaff, kept for audit)
 
 Anki-Translator owns all semantic decisions about what is card-worthy and how to shape it. Anki-Manager remains dumb storage.
 
@@ -29,11 +36,11 @@ Rejected alternatives:
 ## Pipeline
 
 1. **Extract** — pull text + structure from source (URL/PDF/book/manual).
-2. **Classify** — for each chunk, decide whether it fits a configured shape within budget. Yes → card candidate. No → Q&A prose.
+2. **Classify** — for each chunk, decide whether it fits a configured shape within budget. Yes → card candidate. No → overflow, routed to `qa` (substantive) or `trimmed` (chaff).
 3. **Cite** — produce `Source` + `Position` for each chunk per source-type conventions.
 4. **Shape** — assemble card candidate as a note (fields per shape).
 5. **Tag** — apply user-specified batch tag + LLM-generated topic tags (seeded from existing deck tags).
-6. **Queue** — write candidates to a markdown queue file; write overflow prose to Q&A file.
+6. **Queue** — write candidates to a markdown queue file; write overflow to the `qa` (substantive) and `trimmed` (chaff) files.
 7. **Review** — human edits queue file, deletes unwanted blocks (presence = approved).
 8. **Commit** — translator parses surviving blocks, calls Manager to create notes, archives the queue file.
 
@@ -42,7 +49,7 @@ Rejected alternatives:
 Card-worthiness is **mechanical**, not vibe-based: does the content fit a configured shape within field budgets?
 
 - Fits → card candidate in the queue
-- Doesn't fit → Q&A markdown overflow
+- Doesn't fit → markdown overflow (`qa` if substantive, `trimmed` if chaff)
 
 This converts a fuzzy LLM judgment ("is this card-worthy?") into a hard test.
 
@@ -53,7 +60,7 @@ This converts a fuzzy LLM judgment ("is this card-worthy?") into a hard test.
 | Back-field | ≤ 200 chars |
 | List | ≤ 7 items |
 | Steps | ≤ 5 |
-| Cloze deletion | ≤ K words per deletion (TBD) |
+| Cloze deletion | ≤ 5 words per deletion |
 
 Loosening later is easy; tightening retroactively means rewriting cards.
 
@@ -178,10 +185,11 @@ Tags shouldn't duplicate fields.
 
 Markdown file. **Presence-equals-approved**: deleting a block rejects it; no per-card approve flag to toggle.
 
-### Ingestion outputs two files per source
+### Ingestion outputs three files per source
 
-- `queue/<date>-<slug>.md` — flashcard candidates, structured blocks separated by `---`. Reviewed and committed.
-- `qa/<date>-<slug>.md` — prose overflow. **Standalone reference material** — separate lifecycle from the queue, kept permanently.
+- `queue/<date>-<slug>.md` — flashcard candidates, structured blocks separated by `---`. Reviewed and committed, then archived to `queue/committed/`.
+- `qa/<date>-<slug>.md` — **substantive overflow**: reference material that didn't fit a card shape. Separate lifecycle from the queue, **kept permanently**.
+- `trimmed/<date>-<slug>.md` — **chaff**: non-substantive structural material (citations, TOC, headers, author/affiliations). Disposable **audit** for reviewer spot-check, with a routing-drift telemetry footer.
 
 ### Queue file format
 
@@ -207,8 +215,9 @@ Markdown file. **Presence-equals-approved**: deleting a block rejects it; no per
 
 ```
 $ anki-translator ingest https://example.com/article --deck "Reading" --tag book-club-2026
-  → wrote queue/2026-05-27-example-article.md  (8 candidates)
-  → wrote qa/2026-05-27-example-article.md     (3 prose chunks)
+  → wrote queue/2026-05-27-example-article.md    (8 candidates)
+  → wrote qa/2026-05-27-example-article.md       (3 substantive overflow)
+  → wrote trimmed/2026-05-27-example-article.md  (5 chaff)
 
 # User opens queue file, edits prose, deletes blocks they don't want
 
@@ -222,37 +231,44 @@ Committed files are archived (not deleted) to prevent double-commits and to pres
 
 Why markdown not JSON: editing prose during review is the main activity; JSON is hostile for that. Markdown opens in any editor (Obsidian works), is git-trackable, and the parser is ~30 lines (split on `---`, parse key-value).
 
-## Repo Structure (proposed)
+## Repo Structure (as-built, v0.1)
 
 ```
 anki-translator/
   src/anki_translator/
-    extractors/          # per source type (url, pdf, book, manual)
+    extractors/          # per source type (book extractor deferred — see Open Items)
       __init__.py
       url.py
       pdf.py
-      book.py
       manual.py
-    classifier.py        # shape-fit decisions
+    bootstrap.py         # create the AT-prefixed starter note types
+    classifier.py        # shape-fit decisions + qa/trimmed overflow routing
     citation.py          # Source + Position formatting per source type
-    queue.py             # markdown queue read/write/commit
+    queue.py             # markdown queue read/write/commit + overflow lane routing
     ledger.py            # chunk-level dedup (Source + content-hash)
     tagger.py            # topic-tag generation with existing-tag seeding
     config.py            # load shapes.yaml + citation conventions
-    cli.py               # ingest, commit
+    cli.py               # bootstrap, ingest, card, commit
+    prompts/             # classify.txt, tag.txt — LLM prompt templates
   config/
     shapes.yaml          # note-type-name → semantic shape + field roles
     citations.yaml       # per-source-type Source/Position conventions
+    tagger.yaml          # seed-vocabulary filter rules
+  skills/anki-translator/  # the AgentSkill wrapper (ingest_commit_sync.py helper)
   docs/
     design.md            # this file
+    decisions/           # ADRs
   queue/                 # active candidates
     committed/           # archived after commit
-  qa/                    # prose overflow files, kept permanently
+  qa/                    # substantive overflow, kept permanently
+  trimmed/               # chaff, kept for audit
   ledger/                # chunk-hash ingestion log
   pyproject.toml
 ```
 
-Depends on `anki-manager` as a library import.
+State dirs (`queue/`, `qa/`, `trimmed/`, `ledger/`) live in-tree for development;
+the system install rebases them under `$ANKI_TRANSLATOR_STATE_DIR`
+(`/var/lib/anki-translator/`). Depends on `anki-manager` as a library import.
 
 ## Open Items (deferred, not blocking start)
 
@@ -260,8 +276,10 @@ Depends on `anki-manager` as a library import.
 - **Extraction tooling**: pypdf vs. pymupdf for PDFs, trafilatura vs. readability for URLs — pick per extractor when implementing. Choice of library affects what structure (page numbers, headings) is recoverable, which feeds Position.
 - **Failure handling for Anki-Connect unavailable**: queue files are durable on disk; commit can retry. Document the recovery path.
 - **Auto-add mode** for trusted sources: skip the queue, commit directly. Add only after enough hand-review to calibrate the classifier.
-- **Cloze deletion budget**: pick `K` words per deletion before implementing the cloze shape.
 - **Comparison/contrast shape**: may earn its own shape if two-term-def + cloze pattern turns out to be awkward in practice.
+- **Book extractor**: the `book` source type is designed (Source/Position conventions exist) but no extractor ships in v0.1 — add when a book-ingestion need is real.
+
+Resolved since the original design: cloze deletion budget fixed at **5 words** (`config/shapes.yaml`); overflow split into `qa`/`trimmed` lanes (#65/#66/#67).
 
 ## Decisions Log (key tradeoffs)
 
@@ -277,4 +295,4 @@ Depends on `anki-manager` as a library import.
 | Tag strategy | Batch tag + topic/subtopic (seeded), no field-duplicating tags | Tag every facet (noise) |
 | Review model | Markdown queue, presence-equals-approved | Per-card approve flag (toggling overhead); auto-add (uncalibrated) |
 | Queue format | Markdown blocks | JSON (hostile for prose editing); Anki review-deck (rejection cleanup awkward) |
-| Overflow handling | Separate `qa/` markdown file, standalone reference | Inline in queue (mixes lifecycles) |
+| Overflow handling | Separate overflow files, two lanes — `qa/` (substantive, kept) + `trimmed/` (chaff, audit) | Inline in queue (mixes lifecycles); single overflow file (mixes reference with disposable chaff) |
