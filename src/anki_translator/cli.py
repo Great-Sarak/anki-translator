@@ -44,6 +44,26 @@ def _state_default(name: str) -> str:
     return str(Path(base) / name) if base else name
 
 
+# Repo root that ships the config/ dir, resolved from this file's location rather
+# than the cwd: <root>/src/anki_translator/cli.py -> parents[2] == <root>.
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _config_default(name: str) -> str:
+    """Default path for a bundled config file (``shapes.yaml`` / ``tagger.yaml``).
+
+    Resolves to ``$ANKI_TRANSLATOR_CONFIG_DIR/<name>`` when set, else the copy that
+    ships alongside the install (``<package-root>/config/``). Anchoring on the
+    package location instead of the cwd means the tool works from any directory —
+    not just the repo root — which is what the /opt install needs (#88; the v0.1
+    smoke hit ``ConfigError: shapes config not found`` from another cwd). The
+    ``--shapes`` / ``--tagger-config`` flags still override.
+    """
+    base = os.environ.get("ANKI_TRANSLATOR_CONFIG_DIR")
+    root = Path(base) if base else _PACKAGE_ROOT / "config"
+    return str(root / name)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="anki-translator")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -57,8 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     p_ing.add_argument("--deck", required=True, help="Anki deck name (e.g. 'Reading')")
     p_ing.add_argument("--tag", help="Batch tag applied to every produced note (e.g. 'book-club-2026')")
     p_ing.add_argument("--label", help="Source label override (default: file stem, today's date for --text)")
-    p_ing.add_argument("--shapes", default="config/shapes.yaml")
-    p_ing.add_argument("--tagger-config", default="config/tagger.yaml",
+    p_ing.add_argument("--shapes", default=_config_default("shapes.yaml"))
+    p_ing.add_argument("--tagger-config", default=_config_default("tagger.yaml"),
                        help="Optional tagger config (filter rules for seed vocabulary). Missing file → defaults.")
     p_ing.add_argument("--queue-dir", default=_state_default("queue"))
     p_ing.add_argument("--qa-dir", default=_state_default("qa"))
@@ -87,8 +107,8 @@ def main(argv: list[str] | None = None) -> int:
                              "Default: write queue file for review.")
     p_card.add_argument("--tag", action="append", default=[],
                         help="Tag to apply to the note (repeatable)")
-    p_card.add_argument("--shapes", default="config/shapes.yaml")
-    p_card.add_argument("--tagger-config", default="config/tagger.yaml")
+    p_card.add_argument("--shapes", default=_config_default("shapes.yaml"))
+    p_card.add_argument("--tagger-config", default=_config_default("tagger.yaml"))
     p_card.add_argument("--queue-dir", default=_state_default("queue"))
     p_card.add_argument("--qa-dir", default=_state_default("qa"))
     p_card.add_argument("--trimmed-dir", default=_state_default("trimmed"))

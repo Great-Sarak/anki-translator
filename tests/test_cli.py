@@ -491,3 +491,22 @@ def test_state_default_rooted_when_env_set(monkeypatch) -> None:
     monkeypatch.setenv("ANKI_TRANSLATOR_STATE_DIR", "/var/lib/anki-translator")
     assert _state_default("queue") == "/var/lib/anki-translator/queue"
     assert _state_default("trimmed") == "/var/lib/anki-translator/trimmed"
+
+
+# --- ANKI_TRANSLATOR_CONFIG_DIR / package-root config default (#88) ---
+
+def test_config_default_is_package_root_absolute_and_cwd_independent(monkeypatch, tmp_path) -> None:
+    from anki_translator.cli import _config_default, _PACKAGE_ROOT
+    monkeypatch.delenv("ANKI_TRANSLATOR_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)  # prove it does NOT depend on cwd
+    got = _config_default("shapes.yaml")
+    assert got == str(_PACKAGE_ROOT / "config" / "shapes.yaml")
+    from pathlib import Path
+    assert Path(got).is_absolute()
+    assert Path(got).exists()  # the bundled config ships in the package root
+
+
+def test_config_default_env_override(monkeypatch) -> None:
+    from anki_translator.cli import _config_default
+    monkeypatch.setenv("ANKI_TRANSLATOR_CONFIG_DIR", "/etc/anki-translator")
+    assert _config_default("tagger.yaml") == "/etc/anki-translator/tagger.yaml"
