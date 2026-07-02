@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from anki_translator.bootstrap import starter_model_names
 from anki_translator.chunk import Chunk
 from anki_translator.classifier import CardCandidate, Overflow
 from anki_translator.queue import (
@@ -61,6 +62,8 @@ def _fake_mgr(created_then_updated: bool = True) -> MagicMock:
         result.dry_run = dry_run
         return result
     mgr.upsert_note.side_effect = upsert
+    # By default all starter note types already exist, so the model pre-flight is a no-op.
+    mgr.list_models.return_value = {name: {} for name in starter_model_names()}
     return mgr
 
 
@@ -339,3 +342,74 @@ def test_commit_dry_run_skips_add_deck(tmp_path: Path) -> None:
     mgr = _fake_mgr()
     commit_queue(queue_path, mgr, dry_run=True)
     mgr.add_deck.assert_not_called()
+
+
+# ---- model pre-flight (#62) ----
+
+
+def _createmodel_names(mgr: MagicMock) -> list[str]:
+    """modelName kwargs of every mgr.call('createModel', ...) invocation."""
+    return [
+        c.kwargs["modelName"]
+        for c in mgr.call.call_args_list
+        if c.args and c.args[0] == "createModel"
+    ]
+
+
+def test_commit_ensures_models_exist_before_upsert(tmp_path: Path) -> None:
+    """A model missing from Anki but present in STARTER_MODELS is auto-created before upsert."""
+    queue_path = _write_sample_queue(tmp_path, [TaggedCandidate(_candidate(), tags=["t"])])
+    mgr = _fake_mgr()
+    mgr.list_models.return_value = {}  # nothing present → AT Basic must be created
+    result = commit_queue(queue_path, mgr)
+    assert _createmodel_names(mgr) == ["AT Basic"]
+    assert result.failed == []
+    assert mgr.upsert_note.call_count == 1
+
+
+def test_commit_ensures_unique_models_once_each(tmp_path: Path) -> None:
+    """Multiple blocks sharing a model → a single createModel for that model."""
+    queue_path = _write_sample_queue(
+        tmp_path,
+        [
+            TaggedCandidate(_candidate(fields={"Front": "A", "Back": "B"}), tags=["t1"]),
+            TaggedCandidate(_candidate(fields={"Front": "C", "Back": "D"}), tags=["t2"]),
+            TaggedCandidate(_candidate(fields={"Front": "E", "Back": "F"}), tags=["t3"]),
+        ],
+    )
+    mgr = _fake_mgr()
+    mgr.list_models.return_value = {}  # all three blocks use AT Basic
+    commit_queue(queue_path, mgr)
+    assert _createmodel_names(mgr) == ["AT Basic"]
+    assert mgr.upsert_note.call_count == 3
+
+
+def test_commit_model_not_in_starter_set_fails_blocks_without_calling_upsert(tmp_path: Path) -> None:
+    """A queue referencing a model absent from both Anki and STARTER_MODELS fails its blocks
+    cleanly (no createModel, no upsert), mirroring the add_deck failure path."""
+    queue_path = _write_sample_queue(
+        tmp_path,
+        [
+            TaggedCandidate(_candidate(fields={"Front": "A", "Back": "B"}, note_type="AT Bogus"), tags=["t1"]),
+            TaggedCandidate(_candidate(fields={"Front": "C", "Back": "D"}, note_type="AT Bogus"), tags=["t2"]),
+        ],
+    )
+    mgr = _fake_mgr()
+    mgr.list_models.return_value = {}  # AT Bogus is not present and not a starter model
+    result = commit_queue(queue_path, mgr)
+    assert _createmodel_names(mgr) == []  # not in STARTER_MODELS → never attempted
+    assert mgr.upsert_note.call_count == 0
+    assert len(result.failed) == 2
+    for _, msg in result.failed:
+        assert "model setup failed" in msg
+        assert "AT Bogus" in msg
+    assert queue_path.exists()  # not archived on failure
+
+
+def test_commit_dry_run_skips_create_model(tmp_path: Path) -> None:
+    """Dry-run must not mutate state — that includes model creation."""
+    queue_path = _write_sample_queue(tmp_path, [TaggedCandidate(_candidate(), tags=["t"])])
+    mgr = _fake_mgr()
+    mgr.list_models.return_value = {}
+    commit_queue(queue_path, mgr, dry_run=True)
+    assert _createmodel_names(mgr) == []
