@@ -175,6 +175,7 @@ def test_commit_invokes_commit_queue(monkeypatch, tmp_path: Path, capsys) -> Non
     fake_result.updated = []
     fake_result.failed = []
     fake_result.archived_to = tmp_path / "queue" / "committed" / "x.md"
+    fake_result.already_committed = False
     monkeypatch.setattr("anki_translator.cli.commit_queue", lambda *a, **kw: fake_result)
 
     rc = cli.main(["commit", str(tmp_path / "queue" / "x.md")])
@@ -192,6 +193,7 @@ def test_commit_nonzero_exit_on_failures(monkeypatch, tmp_path: Path, capsys) ->
     fake_result.updated = []
     fake_result.failed = [(2, "RuntimeError: timeout")]
     fake_result.archived_to = None
+    fake_result.already_committed = False
     monkeypatch.setattr("anki_translator.cli.commit_queue", lambda *a, **kw: fake_result)
 
     rc = cli.main(["commit", str(tmp_path / "x.md")])
@@ -209,6 +211,7 @@ def test_commit_dry_run_passes_flag(monkeypatch, tmp_path: Path, capsys) -> None
         result.updated = []
         result.failed = []
         result.archived_to = None
+        result.already_committed = False
         return result
     monkeypatch.setattr("anki_translator.cli.commit_queue", fake_commit)
     cli.main(["commit", str(tmp_path / "x.md"), "--dry-run"])

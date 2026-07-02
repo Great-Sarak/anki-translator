@@ -203,6 +203,31 @@ def test_commit_archives_file_after_success(tmp_path: Path) -> None:
     assert result.archived_to == expected_archive
 
 
+def test_commit_of_already_archived_file_is_noop(tmp_path: Path) -> None:
+    """Re-committing a file already in a committed/ dir must not re-upsert or re-nest.
+
+    Regression for #91: previously the archived file was upserted again and moved to
+    committed/committed/. Now it's a clean no-op that reports already_committed.
+    """
+    queue_path = _write_sample_queue(tmp_path, [TaggedCandidate(_candidate(), tags=["t"])])
+    mgr = _fake_mgr()
+    first = commit_queue(queue_path, mgr)
+    assert first.archived_to is not None
+    archived = first.archived_to
+    assert archived.parent.name == "committed"
+
+    mgr2 = _fake_mgr()
+    result = commit_queue(archived, mgr2)
+    assert result.already_committed is True
+    assert result.created == []
+    assert result.updated == []
+    assert result.archived_to is None
+    mgr2.upsert_note.assert_not_called()
+    # File stays put — no nested committed/committed/.
+    assert archived.exists()
+    assert not (archived.parent / "committed" / archived.name).exists()
+
+
 def test_commit_does_not_archive_on_failure(tmp_path: Path) -> None:
     """If any block fails, leave the file in place for retry (upsert is idempotent)."""
     queue_path = _write_sample_queue(
