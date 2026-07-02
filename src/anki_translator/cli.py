@@ -336,6 +336,7 @@ def _cmd_commit(args: argparse.Namespace) -> int:
         "updated": result.updated,
         "failed": result.failed,
         "archived_to": str(result.archived_to) if result.archived_to else None,
+        "already_committed": result.already_committed,
     }, indent=2))
     return 0 if not result.failed else 1
 

@@ -449,6 +449,7 @@ class CommitResult:
     updated: list[str] = field(default_factory=list)        # stable_guids of existing notes whose fields changed
     failed: list[tuple[int, str]] = field(default_factory=list)  # (block_index, error message)
     archived_to: Path | None = None
+    already_committed: bool = False                          # input was an already-archived file; commit was a no-op
 
 
 def parse_queue(path: Path | str) -> list[ParsedBlock]:
@@ -536,6 +537,14 @@ def commit_queue(
     safe to retry because upsert_note is idempotent by stable_guid.
     """
     p = Path(path)
+
+    # Guard: if the input is an already-archived file (it lives in a `committed/`
+    # dir), re-committing it is a no-op. Without this it would be upserted again
+    # (harmless — upsert is idempotent by stable_guid) and then re-archived into a
+    # nested `committed/committed/` subdir. Report "already committed", touch nothing.
+    if p.parent.name == "committed":
+        return CommitResult(already_committed=True)
+
     blocks = parse_queue(p)
     result = CommitResult()
 
