@@ -189,12 +189,15 @@ def _default_llm(prompt: str, model: str | None = None) -> str:
     import re
     import subprocess
 
+    from .subproc import clean_env
+
     resolved_model = model or os.environ.get("ANKI_TRANSLATOR_MODEL", DEFAULT_MODEL)
     result = subprocess.run(
         ["openclaw", "infer", "model", "run", "--json", "--prompt", prompt, "--model", resolved_model],
         capture_output=True,
         text=True,
         check=True,
+        env=clean_env(),
     )
     data = json.loads(result.stdout)
     text = data["outputs"][0]["text"]

@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .subproc import clean_env
+
 from .classifier import CardCandidate, LLMCall, _default_llm, resolve_concurrency
 from .config import TaggerConfig
 
@@ -50,6 +52,7 @@ def _get_openclaw_agent_names() -> set[str]:
             text=True,
             check=True,
             timeout=10,
+            env=clean_env(),
         )
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return set()
