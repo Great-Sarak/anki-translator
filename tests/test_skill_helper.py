@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
+
+from anki_translator.subproc import clean_env
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,9 +61,13 @@ else:
     return bin_dir
 
 
-def test_helper_runs_ingest_commit_sync(tmp_path: Path) -> None:
+def test_helper_runs_ingest_commit_sync(tmp_path: Path, monkeypatch) -> None:
     bin_dir = _write_fake_bins(tmp_path)
-    env = os.environ.copy()
+    monkeypatch.setenv("PYTHONHOME", "/poison/private-python")
+    monkeypatch.setenv("PYTHONPATH", "/poison/private-packages")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/poison/private-libs")
+    env = clean_env()
+    assert not {"PYTHONHOME", "PYTHONPATH", "LD_LIBRARY_PATH"} & env.keys()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env.pop("ANKI_TRANSLATOR_CONCURRENCY", None)
 
@@ -108,7 +113,7 @@ def test_helper_runs_ingest_commit_sync(tmp_path: Path) -> None:
 
 def test_helper_supports_inline_text_and_concurrency_override(tmp_path: Path) -> None:
     bin_dir = _write_fake_bins(tmp_path)
-    env = os.environ.copy()
+    env = clean_env()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
 
     result = subprocess.run(
@@ -159,6 +164,7 @@ def test_helper_rejects_missing_source_and_text() -> None:
     result = subprocess.run(
         [sys.executable, str(HELPER), "--deck", "Myrzka::Reading"],
         check=False,
+        env=clean_env(),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
