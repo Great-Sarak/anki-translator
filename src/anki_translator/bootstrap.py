@@ -133,13 +133,32 @@ def check_missing(mgr: AnkiManager) -> list[str]:
     return [m["modelName"] for m in STARTER_MODELS if m["modelName"] not in present]
 
 
-def bootstrap(mgr: AnkiManager, dry_run: bool = False) -> BootstrapResult:
-    """Create any missing starter note types. Idempotent — running twice is a no-op.
+def starter_model_def(name: str) -> dict[str, Any] | None:
+    """Return the STARTER_MODELS definition for `name`, or None if it isn't a starter model."""
+    for model in STARTER_MODELS:
+        if model["modelName"] == name:
+            return model
+    return None
+
+
+def create_model(mgr: AnkiManager, model: dict[str, Any]) -> None:
+    """Create a single note type in Anki from a STARTER_MODELS definition.
 
     Uses mgr.call('createModel', ...) since anki-manager does not yet expose a typed
     create_model() method. Track that follow-up against Great-Sarak/anki-manager#1 — once
     a typed method lands, swap this passthrough for it.
     """
+    mgr.call(
+        "createModel",
+        modelName=model["modelName"],
+        inOrderFields=model["inOrderFields"],
+        isCloze=model["isCloze"],
+        cardTemplates=model["cardTemplates"],
+    )
+
+
+def bootstrap(mgr: AnkiManager, dry_run: bool = False) -> BootstrapResult:
+    """Create any missing starter note types. Idempotent — running twice is a no-op."""
     result = BootstrapResult()
     present = set(mgr.list_models().keys())
 
@@ -151,13 +170,7 @@ def bootstrap(mgr: AnkiManager, dry_run: bool = False) -> BootstrapResult:
         if dry_run:
             result.created.append(name)
             continue
-        mgr.call(
-            "createModel",
-            modelName=name,
-            inOrderFields=model["inOrderFields"],
-            isCloze=model["isCloze"],
-            cardTemplates=model["cardTemplates"],
-        )
+        create_model(mgr, model)
         result.created.append(name)
 
     return result

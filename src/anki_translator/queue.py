@@ -562,10 +562,39 @@ def commit_queue(
             except Exception as e:  # noqa: BLE001 — propagate per-block below
                 deck_errors[deck] = f"{type(e).__name__}: {e}"
 
+    # Ensure each referenced note type exists before the per-block upserts — parity with
+    # the deck pre-flight above. A new AT-prefixed model landing in bootstrap.STARTER_MODELS
+    # (e.g. `AT Table` via #54) otherwise trapdoors every commit of a queue that uses it
+    # with an opaque "model was not found" until the user manually re-runs `bootstrap`.
+    # Missing models are auto-installed from STARTER_MODELS (the single source of truth);
+    # a model not in that set fails its blocks cleanly, mirroring the add_deck failure path.
+    # Skipped in dry_run since createModel is a mutation.
+    model_errors: dict[str, str] = {}
+    if not dry_run:
+        from . import bootstrap
+
+        present_models = set(mgr.list_models().keys())
+        for model_name in dict.fromkeys(b.model for b in blocks):  # unique, preserves order
+            if model_name in present_models:
+                continue
+            model_def = bootstrap.starter_model_def(model_name)
+            if model_def is None:
+                model_errors[model_name] = f"{model_name!r} not in STARTER_MODELS"
+                continue
+            try:
+                bootstrap.create_model(mgr, model_def)
+            except Exception as e:  # noqa: BLE001 — propagate per-block below
+                model_errors[model_name] = f"{type(e).__name__}: {e}"
+
     for i, block in enumerate(blocks, start=1):
         if block.deck in deck_errors:
             result.failed.append(
                 (i, f"deck setup failed for {block.deck!r}: {deck_errors[block.deck]}")
+            )
+            continue
+        if block.model in model_errors:
+            result.failed.append(
+                (i, f"model setup failed for {block.model!r}: {model_errors[block.model]}")
             )
             continue
         try:
