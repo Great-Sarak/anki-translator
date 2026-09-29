@@ -430,8 +430,10 @@ def test_title_falls_back_to_filename(tmp_path: Path) -> None:
     assert chunks[0].metadata["filename"] == "untitled.epub"
 
 
-def test_sub_floor_fragments_dropped(tmp_path: Path) -> None:
-    """Captions/paragraphs under MIN_CHUNK_CHARS are dropped silently (pdf.py parity)."""
+def test_sub_floor_unflagged_fragments_dropped(tmp_path: Path) -> None:
+    """Unflagged paragraphs under MIN_CHUNK_CHARS are dropped silently (pdf.py parity),
+    but sub-floor STRUCTURAL matter (here a short caption) is preserved and flagged —
+    the floor must not delete known structural content before S3 can route it."""
     p = _write_epub(tmp_path / "tiny.epub", {
         "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
         "content.opf": _opf(
@@ -442,10 +444,130 @@ def test_sub_floor_fragments_dropped(tmp_path: Path) -> None:
         ),
         "fig1.xhtml": _xhtml("<figure><figcaption>Figure 1.</figcaption></figure>"),
         "chapter.xhtml": _xhtml(
+            "<p>Short.</p>"
             f"<p>{_pad('A real body paragraph that clearly survives the size floor.')}</p>"
         ),
     })
     chunks = extract(p)
-    assert len(chunks) == 1
-    assert chunks[0].metadata["spine_item"] == "chapter.xhtml"
-    assert len("Figure 1.") < MIN_CHUNK_CHARS  # guards the fixture's premise
+    assert len("Figure 1.") < MIN_CHUNK_CHARS and len("Short.") < MIN_CHUNK_CHARS
+    # sub-floor caption: preserved, flagged, routed to trimmed via S3
+    caption = _find(chunks, "Figure 1.")
+    assert caption.metadata[PREFILTER_METADATA_KEY] == "figure-caption"
+    _, prefiltered = split_prefiltered(chunks)
+    assert any(ov.reason.startswith("extractor: pre-filtered") for ov in prefiltered)
+    # sub-floor UNFLAGGED body fragment: still dropped silently
+    assert all(not c.text.startswith("Short.") for c in chunks)
+    assert _find(chunks, "A real body paragraph").metadata.get(PREFILTER_METADATA_KEY) is None
+# ---- #71 review regressions ----
+
+
+def test_heading_state_scoped_to_its_section(tmp_path: Path) -> None:
+    """Finding 1: a heading inside a structural section must not flag a heading-less
+    body sibling that follows it. The References heading flags the citation inside
+    its own section; the trailing body paragraph stays classifiable."""
+    p = _write_epub(tmp_path / "scope.epub", {
+        "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+        "content.opf": _opf(
+            "Scoped",
+            [("body", "body.xhtml", "application/xhtml+xml", "")],
+            ["body"],
+        ),
+        "body.xhtml": _xhtml(
+            '<section epub:type="bibliography"><h2>References</h2>'
+            f"<p>{_pad('Smith J. (2020). A citation entry inside the references section.')}</p>"
+            "</section>"
+            "<section>"
+            f"<p>{_pad('A substantive body paragraph that follows the references and has no heading.')}</p>"
+            "</section>"
+        ),
+    })
+    chunks = extract(p)
+    citation = _find(chunks, "Smith J.")
+    assert citation.metadata[PREFILTER_METADATA_KEY] in ("bibliography", "references")
+    body = _find(chunks, "A substantive body paragraph")
+    assert PREFILTER_METADATA_KEY not in body.metadata
+    # and the body paragraph still reaches the classifier path
+    to_classify, prefiltered = split_prefiltered(chunks)
+    assert [c.text for c in to_classify] == [body.text]
+    assert all(
+        overflow_bucket(ov.reason, ov.bucket) == "trimmed" for ov in prefiltered
+    )
+
+
+def test_structural_headings_recognized_without_epub_type(tmp_path: Path) -> None:
+    """Finding 2(a): index.xhtml carrying <h1>Index</h1> but no epub:type — the bare
+    'index' stem is (correctly) not a filename signal, so the heading must catch it."""
+    p = _write_epub(tmp_path / "bookindex.epub", {
+        "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+        "content.opf": _opf(
+            "Book Index",
+            [("idx", "index.xhtml", "application/xhtml+xml", ""),
+             ("ch", "chapter.xhtml", "application/xhtml+xml", "")],
+            ["idx", "ch"],
+        ),
+        "index.xhtml": _xhtml(
+            "<section><h1>Index</h1>"
+            f"<p>{_pad('Alpha, 12, 45. Beta, 33. Gamma, 78. A book-index entry paragraph.')}</p>"
+            "</section>"
+        ),
+        "chapter.xhtml": _xhtml(
+            f"<p>{_pad('Ordinary body content living in the chapter spine item.')}</p>"
+        ),
+    })
+    chunks = extract(p)
+    assert _find(chunks, "Alpha, 12, 45").metadata[PREFILTER_METADATA_KEY] == "index"
+    assert PREFILTER_METADATA_KEY not in _find(chunks, "Ordinary body content").metadata
+
+
+def test_generic_backmatter_class_with_structural_heading(tmp_path: Path) -> None:
+    """Finding 2(b): epub:type='backmatter' stays a non-signal by itself, but a
+    Colophon heading inside it must still flag the colophon paragraph."""
+    p = _write_epub(tmp_path / "backmatter.epub", {
+        "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+        "content.opf": _opf(
+            "Backmatter",
+            [("bm", "backmatter.xhtml", "application/xhtml+xml", ""),
+             ("ch", "chapter.xhtml", "application/xhtml+xml", "")],
+            ["bm", "ch"],
+        ),
+        "backmatter.xhtml": _xhtml(
+            '<section epub:type="backmatter"><h2>Colophon</h2>'
+            f"<p>{_pad('This book was set in a fixture typeface by the test suite press.')}</p>"
+            "</section>"
+        ),
+        "chapter.xhtml": _xhtml(
+            f"<p>{_pad('Ordinary body content living in the chapter spine item.')}</p>"
+        ),
+    })
+    chunks = extract(p)
+    assert _find(chunks, "This book was set").metadata[PREFILTER_METADATA_KEY] == "colophon"
+    assert PREFILTER_METADATA_KEY not in _find(chunks, "Ordinary body content").metadata
+
+
+def test_short_structural_content_routed_through_s3(tmp_path: Path) -> None:
+    """Finding 3: a dedication shorter than MIN_CHUNK_CHARS must survive as a flagged
+    chunk and reach trimmed through S3 with zero classifier dispatch — not vanish."""
+    p = _write_epub(tmp_path / "shortded.epub", {
+        "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+        "content.opf": _opf(
+            "Short Dedication",
+            [("ded", "dedication.xhtml", "application/xhtml+xml", ""),
+             ("ch", "chapter.xhtml", "application/xhtml+xml", "")],
+            ["ded", "ch"],
+        ),
+        "dedication.xhtml": _xhtml(
+            '<section epub:type="dedication"><p>For Alice.</p></section>'
+        ),
+        "chapter.xhtml": _xhtml(
+            f"<p>{_pad('Ordinary body content living in the chapter spine item.')}</p>"
+        ),
+    })
+    assert len("For Alice.") < MIN_CHUNK_CHARS  # guards the fixture's premise
+    chunks = extract(p)
+    dedication = _find(chunks, "For Alice.")
+    assert dedication.metadata[PREFILTER_METADATA_KEY] == "dedication"
+    to_classify, prefiltered = split_prefiltered(chunks)
+    assert len(prefiltered) == 1
+    assert overflow_bucket(prefiltered[0].reason, prefiltered[0].bucket) == "trimmed"
+    # zero dispatch for the structural chunk; the body paragraph is all the classifier sees
+    assert [c.text for c in to_classify] == ["Ordinary body content living in the chapter spine item."]

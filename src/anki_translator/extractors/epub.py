@@ -17,10 +17,13 @@ chunks via PREFILTER_METADATA_KEY so they bypass the LLM and land in trimmed
    caught at section level instead (epub:type="index" / a heading).
 2. Section level — the enclosing <section>'s epub:type / DPUB ``role="doc-*"``
    token is structural (bibliography, endnotes, abstract, …), or the enclosing
-   heading text is recognized by url.py's _boilerplate_kind plus the epub-only
-   additions "abstract" and "about the author". This is what reaches structural
-   matter inside single-item article epubs, where abstract/references/
-   acknowledgments live as sections of the one body file.
+   heading text is recognized by url.py's _boilerplate_kind plus the EPUB-only
+   heading map (title page, copyright, dedication, preface, colophon, index,
+   about the author). This is what reaches structural matter inside
+   single-item article epubs, where abstract/references/acknowledgments live
+   as sections of the one body file, and what catches book indexes/colophons
+   whose files carry no epub:type. Heading state is scoped to the enclosing
+   <section>, so it cannot leak into sibling sections.
 3. Element level — <figcaption> text is flagged 'figure-caption'. Figure/table
    wrapper items (common in article epubs) contain only a caption plus an
    <img>/<table>; the caption is never card material, and table cell text is
@@ -28,9 +31,13 @@ chunks via PREFILTER_METADATA_KEY so they bypass the LLM and land in trimmed
 
 The EPUB 2 toc.ncx is media-type application/x-dtbncx+xml, not XHTML, so it is
 never a spine extraction target; only application/xhtml+xml spine items are
-read. Chunks shorter than MIN_CHUNK_CHARS are dropped silently, same rationale
-as pdf.py (page-number/caption noise below the floor is not worth an auditable
-trimmed entry).
+read. Unflagged chunks shorter than MIN_CHUNK_CHARS are dropped silently, same
+rationale as pdf.py (page-number noise below the floor is not worth an
+auditable trimmed entry) — but known structural matter is exempt from the
+floor: a two-word dedication or a short caption is preserved, flagged, and
+routed to trimmed through S3 like any other structural chunk, so the issue's
+acceptance criterion (structural matter reaches trimmed *via* the pre-filter,
+with zero classifier dispatch) holds across EPUB organizations.
 """
 
 from __future__ import annotations
@@ -47,7 +54,8 @@ from ..classifier import PREFILTER_METADATA_KEY
 from . import ExtractionError
 from .url import _ParagraphAndAnchorParser, _boilerplate_kind
 
-# Same floor as pdf.py: shorter fragments are page-number / short-caption noise.
+# Same floor as pdf.py: shorter UNFLAGGED fragments are page-number /
+# short-caption noise. Structural matter is exempt — see extract().
 MIN_CHUNK_CHARS = 30
 
 _XHTML_MEDIA_TYPE = "application/xhtml+xml"
@@ -130,26 +138,52 @@ def _href_stem_kind(href: str) -> str | None:
     return None
 
 
+# EPUB-only heading map (#71): the issue's named structural kinds that url.py's
+# _boilerplate_kind does not cover — the URL vocabulary is article/wiki-shaped
+# (references, cited-by, see-also), while books name their front/back matter
+# Title Page, Copyright, Dedication, Preface, Colophon, Index. Substring match
+# like the URL map, so "Preface to the Second Edition" still flags. Kinds reuse
+# the _STRUCTURAL_EPUB_TYPES vocabulary so trimmed entries read consistently
+# however the publisher signalled the matter.
+_EPUB_HEADING_KINDS: tuple[tuple[str, str], ...] = (
+    ("about the author", "author-info"),
+    ("title page", "title-page"),
+    ("copyright", "copyright"),
+    ("dedication", "dedication"),
+    ("preface", "preface"),
+    ("colophon", "colophon"),
+)
+
+# "Index" gets a word-boundary rule rather than a substring one: a body heading
+# like "Indexed by color" is prose, not a book index.
+_INDEX_HEADING_RE = re.compile(r"\bindex\b")
+
+
 def _section_title_kind(section_title: str) -> str | None:
     """EPUB-aware extension of url.py's _boilerplate_kind.
 
-    Adds one structural heading common in book back matter that the URL map
-    does not cover: 'About the author'. Everything else defers to the shared
-    url.py vocabulary, which is the seam that makes section-level structural
-    matter reachable inside single-spine-item article epubs.
+    Adds the EPUB structural headings the URL map does not cover — title page,
+    copyright, dedication, preface, colophon, index, about-the-author — then
+    defers to the shared url.py vocabulary, which is the seam that makes
+    section-level structural matter reachable inside single-spine-item article
+    epubs. Heading state is scoped to the enclosing <section> (see
+    _XHTMLSectionParser), so these rules cannot bleed into sibling sections.
 
-    Note: 'Abstract' is deliberately NOT matched here. The section-title state
-    is sticky (nearest preceding heading), so a heading-text rule flags every
-    paragraph until the next heading — in minimal article epubs whose body
-    carries no further headings, that sweeps the whole body into trimmed.
-    Abstracts are flagged via epub:type="abstract" / role="doc-abstract" on the
-    enclosing section instead, which all observed journal epubs carry.
+    Note: 'Abstract' is still deliberately NOT matched by heading. Not every
+    journal epub wraps its abstract in a <section>, and outside a section the
+    heading state remains sticky to end-of-item (url.py semantics) — matching
+    it would sweep a heading-less article body into trimmed. Abstracts flag via
+    epub:type="abstract" / role="doc-abstract", which all observed journal
+    epubs carry.
     """
     t = section_title
     if not t:
         return None
-    if "about the author" in t:
-        return "author-info"
+    for phrase, kind in _EPUB_HEADING_KINDS:
+        if phrase in t:
+            return kind
+    if _INDEX_HEADING_RE.search(t):
+        return "index"
     return _boilerplate_kind(t)
 
 
@@ -242,6 +276,11 @@ class _XHTMLSectionParser(_ParagraphAndAnchorParser):
     - <section epub:type="…"> / role="doc-…" tokens are tracked on a stack so
       every paragraph enclosed by a structural section inherits its kind,
       however the publisher organized the files.
+    - Heading-derived state is scoped the same way: entering a <section> saves
+      the current section title and leaving restores it, so a "References"
+      heading inside a bibliography section cannot flag a heading-less body
+      sibling that follows it (#71 review). Headings outside any <section>
+      keep url.py's sticky-to-end-of-item semantics.
     - A <section id="…"> updates the current anchor: in article epubs the id
       lives on the section, not on the heading, and Position wants it.
 
@@ -252,6 +291,10 @@ class _XHTMLSectionParser(_ParagraphAndAnchorParser):
         super().__init__()
         self.records: list[tuple[str, str | None, str, str | None, bool]] = []
         self._section_stack: list[tuple[frozenset[str], str]] = []
+        # Section titles saved on <section> entry, restored on exit — parallel
+        # to _section_stack, so heading-derived kinds stay inside the section
+        # that supplied the heading.
+        self._saved_section_titles: list[str] = []
         self._paragraph_origin: str | None = None  # None | "div" | "figcaption"
         self._div_depth = 0  # nested plain <div> inside an open div-paragraph
 
@@ -286,6 +329,7 @@ class _XHTMLSectionParser(_ParagraphAndAnchorParser):
             attr = dict(attrs)
             tokens = frozenset((attr.get("epub:type") or "").split())
             self._section_stack.append((tokens, attr.get("role") or ""))
+            self._saved_section_titles.append(self._current_section_title)
             if attr.get("id"):
                 self._current_anchor = attr["id"]
             return  # base ignores <section>
@@ -313,6 +357,8 @@ class _XHTMLSectionParser(_ParagraphAndAnchorParser):
         if tag == "section":
             if self._section_stack:
                 self._section_stack.pop()
+            if self._saved_section_titles:
+                self._current_section_title = self._saved_section_titles.pop()
             return  # base ignores </section>
         if self._in_paragraph and self._paragraph_origin == "div" and tag == "div":
             if self._div_depth > 0:
@@ -341,8 +387,9 @@ def extract(path: Path | str) -> list[Chunk]:
     Structural matter (title/copyright/dedication pages, nav/TOC, indexes,
     bibliographies, endnotes, about-the-author, colophons, abstracts, figure
     captions) is flagged via PREFILTER_METADATA_KEY so the pipeline routes it
-    to trimmed without an LLM call (#67/#71); fragments shorter than
-    MIN_CHUNK_CHARS are dropped.
+    to trimmed without an LLM call (#67/#71); unflagged fragments shorter than
+    MIN_CHUNK_CHARS are dropped, while structural matter is preserved at any
+    length.
     """
     p = Path(path)
     if not p.exists():
@@ -370,7 +417,7 @@ def extract(path: Path | str) -> list[Chunk]:
 
             for text, anchor, section_title, type_kind, is_caption in parser.records:
                 text = text.strip()
-                if len(text) < MIN_CHUNK_CHARS:
+                if not text:
                     continue
                 kind = (
                     item_kind
@@ -378,6 +425,12 @@ def extract(path: Path | str) -> list[Chunk]:
                     or ("figure-caption" if is_caption else None)
                     or _section_title_kind(section_title)
                 )
+                # The size floor applies to ordinary body fragments only.
+                # Known structural matter is kept however short (a dedication
+                # can be two words) so it reaches trimmed *through* S3 with an
+                # auditable reason instead of vanishing silently (#71 review).
+                if len(text) < MIN_CHUNK_CHARS and kind is None:
+                    continue
                 metadata: dict[str, object] = {
                     "title": source_label,
                     "filename": p.name,
