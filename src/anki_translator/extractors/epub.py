@@ -42,6 +42,7 @@ with zero classifier dispatch) holds across EPUB organizations.
 
 from __future__ import annotations
 
+import codecs
 import posixpath
 import re
 import zipfile
@@ -103,6 +104,28 @@ def _read_member(zf: zipfile.ZipFile, name: str) -> bytes:
     """zf.read(name) with the decompression-budget guard applied first."""
     _check_member_ratio(zf, name)
     return zf.read(name)
+
+
+def _decode_xhtml(data: bytes) -> str:
+    """Decode spine XHTML bytes to str per XML's encoding rules.
+
+    EPUB 3.3 permits every XML-based publication resource in UTF-8 or UTF-16
+    (UTF-8 recommended, not required), so an unconditional UTF-8 decode turned
+    conformant UTF-16 spine items into NUL-separated noise the HTML walk read
+    as no markup at all (#71 review round 3, finding 1). XML 1.0 §4.3.3
+    requires every UTF-16 entity to begin with a byte order mark, so BOM
+    detection plus a UTF-8 default is the complete rule set for conformant
+    documents: the XML declaration is never hand-parsed (a well-known source
+    of subtle bugs), and a strict XML parse is deliberately NOT used as the
+    decoder because real-world EPUB XHTML routinely carries constructs such a
+    parser rejects (undeclared HTML entities like &nbsp;) while the tolerant
+    HTMLParser walk handles them fine. A UTF-8 BOM is now stripped via
+    utf-8-sig instead of leaking U+FEFF into the text walk.
+    """
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        # The utf-16 codec consumes the BOM and detects endianness from it.
+        return data.decode("utf-16", errors="replace")
+    return data.decode("utf-8-sig", errors="replace")
 
 # epub:type vocabulary (EPUB 3 semantics / z3998 / DPUB) that marks a section or
 # whole item as structural chaff. Deliberately narrow: the generic
@@ -198,9 +221,27 @@ _EPUB_HEADING_KINDS: tuple[tuple[str, str], ...] = (
     ("colophon", "colophon"),
 )
 
-# "Index" gets a word-boundary rule rather than a substring one: a body heading
-# like "Indexed by color" is prose, not a book index.
-_INDEX_HEADING_RE = re.compile(r"\bindex\b")
+# Book-index heading fallback. A word-boundary search for "index" is not
+# enough (#71 review round 3, finding 2): it flagged any heading *containing*
+# the standalone word, so substantive body sections like "Refractive Index in
+# Optical Materials" or "H-index as a measure of research impact" were routed
+# to trimmed with zero classifier dispatch — the inverse of the acceptance
+# criterion. Real book indexes title themselves from a bounded vocabulary, so
+# match the WHOLE normalized heading instead: "index", "<qualifier> index"
+# (general/subject/author/name/…, at most two qualifier words), or "index of
+# <names>". A heading that merely mentions an index falls through to the
+# classifier — the safe direction, since under-matching costs classifier
+# tokens while over-matching silently deletes body content.
+_BOOK_INDEX_HEADING_RE = re.compile(
+    r"(?:index(?: of [a-z]{1,20}(?: [a-z]{1,20}){0,2})?"
+    r"|[a-z]{1,20}(?: [a-z]{1,20})? index)"
+)
+
+
+def _is_book_index_heading(section_title: str) -> bool:
+    """Whole-heading book-index title match (see _BOOK_INDEX_HEADING_RE)."""
+    t = re.sub(r"\s+", " ", section_title).strip().rstrip(".:")
+    return bool(_BOOK_INDEX_HEADING_RE.fullmatch(t))
 
 
 def _section_title_kind(section_title: str) -> str | None:
@@ -226,7 +267,7 @@ def _section_title_kind(section_title: str) -> str | None:
     for phrase, kind in _EPUB_HEADING_KINDS:
         if phrase in t:
             return kind
-    if _INDEX_HEADING_RE.search(t):
+    if _is_book_index_heading(t):
         return "index"
     return _boilerplate_kind(t)
 
@@ -474,7 +515,7 @@ def extract(path: Path | str) -> list[Chunk]:
             item_kind = _item_kind(href, properties)
             data = _read_member(zf, href)
             parser = _XHTMLSectionParser()
-            parser.feed(data.decode("utf-8", errors="replace"))
+            parser.feed(_decode_xhtml(data))
             parser.close()
 
             for text, anchor, section_title, type_kind, is_caption in parser.records:

@@ -9,6 +9,7 @@ structural matter lives inside it as sections (EPUB 3, nav document in the spine
 
 from __future__ import annotations
 
+import codecs
 import zipfile
 from pathlib import Path
 
@@ -73,7 +74,7 @@ def _xhtml(body: str, *, title: str = "doc") -> str:
     )
 
 
-def _write_epub(path: Path, files: dict[str, str]) -> Path:
+def _write_epub(path: Path, files: dict[str, str | bytes]) -> Path:
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("mimetype", "application/epub+zip")
         for name, content in files.items():
@@ -761,3 +762,99 @@ def test_stored_large_member_passes_guard(tmp_path: Path) -> None:
         assert info.compress_size == info.file_size  # stored: ratio 1
     chunks = extract(p)
     assert chunks and all(c.text == paragraph for c in chunks)
+
+
+# ---- #71 review round 3 regressions ----
+
+
+def test_utf16_spine_item_decoded_like_utf8(tmp_path: Path) -> None:
+    """Finding 1: EPUB 3.3 permits UTF-8 OR UTF-16 for every XML-based
+    publication resource. A conformant UTF-16 spine item (BOM + encoding
+    declaration) must produce exactly the chunks its UTF-8 twin produces —
+    the unconditional UTF-8 decode used to turn it into NUL-separated noise
+    and extraction failed with 'no paragraphs extracted'."""
+    body = (
+        '<section epub:type="dedication">'
+        f"<p>{_pad('To everyone who decodes test fixtures in either encoding.')}</p>"
+        "</section>"
+        "<section>"
+        f"<p>{_pad('An ordinary body paragraph that both encodings must yield identically.')}</p>"
+        "</section>"
+    )
+    utf8_decl = _xhtml(body)  # declaration says encoding="utf-8"
+    utf16_decl = utf8_decl.replace('encoding="utf-8"', 'encoding="UTF-16"')
+
+    def build(name: str, chapter: bytes) -> Path:
+        return _write_epub(tmp_path / name, {
+            "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+            "content.opf": _opf(
+                "Encodings",
+                [("ch", "chapter.xhtml", "application/xhtml+xml", "")],
+                ["ch"],
+            ),
+            "chapter.xhtml": chapter,
+        })
+
+    epub_utf8 = build("utf8.epub", utf8_decl.encode("utf-8"))
+    # utf-16 codec emits the BOM; utf-16-be gets an explicit BE BOM — both
+    # endiannesses are conformant and both must decode.
+    epub_utf16le = build("utf16le.epub", utf16_decl.encode("utf-16"))
+    epub_utf16be = build(
+        "utf16be.epub", codecs.BOM_UTF16_BE + utf16_decl.encode("utf-16-be")
+    )
+
+    def identity(chunks):
+        return [
+            (c.text, c.position, c.metadata.get(PREFILTER_METADATA_KEY))
+            for c in chunks
+        ]
+
+    base = identity(extract(epub_utf8))
+    assert base, "UTF-8 baseline must produce chunks"
+    assert identity(extract(epub_utf16le)) == base
+    assert identity(extract(epub_utf16be)) == base
+    # the structural flag survives decoding in both encodings
+    assert _find(extract(epub_utf16le), "To everyone").metadata[
+        PREFILTER_METADATA_KEY
+    ] == "dedication"
+
+
+def test_substantive_heading_containing_index_not_prefiltered(tmp_path: Path) -> None:
+    """Finding 2: a body heading that merely CONTAINS the standalone word
+    'index' is not a book index — its paragraphs must stay in to_classify with
+    classifier dispatch intact. The whole-title fallback must still catch real
+    book-index titles ('General Index' here; bare 'Index' is covered by
+    test_structural_headings_recognized_without_epub_type)."""
+    p = _write_epub(tmp_path / "indexmention.epub", {
+        "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+        "content.opf": _opf(
+            "Index Mentions",
+            [("body", "body.xhtml", "application/xhtml+xml", "")],
+            ["body"],
+        ),
+        "body.xhtml": _xhtml(
+            "<section><h2>Refractive Index in Optical Materials</h2>"
+            f"<p>{_pad('Refractive index varies with wavelength and temperature in glasses.')}</p>"
+            "</section>"
+            "<section><h2>H-index as a measure of research impact</h2>"
+            f"<p>{_pad('The h-index combines productivity with citation impact per author.')}</p>"
+            "</section>"
+            "<section><h2>General Index</h2>"
+            f"<p>{_pad('Alpha, 12, 45. Beta, 33. Gamma, 78. A book-index entry paragraph.')}</p>"
+            "</section>"
+        ),
+    })
+    chunks = extract(p)
+    refractive = _find(chunks, "Refractive index varies")
+    h_index = _find(chunks, "The h-index combines")
+    book_index = _find(chunks, "Alpha, 12, 45")
+    assert PREFILTER_METADATA_KEY not in refractive.metadata
+    assert PREFILTER_METADATA_KEY not in h_index.metadata
+    assert book_index.metadata[PREFILTER_METADATA_KEY] == "index"
+
+    # the inverse-of-acceptance check: both substantive sections dispatch,
+    # only the real book index is prefiltered, and it lands in trimmed via S3
+    to_classify, prefiltered = split_prefiltered(chunks)
+    assert {c.text for c in to_classify} == {refractive.text, h_index.text}
+    assert len(prefiltered) == 1
+    assert overflow_bucket(prefiltered[0].reason, prefiltered[0].bucket) == "trimmed"
