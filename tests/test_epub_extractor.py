@@ -315,22 +315,36 @@ def test_prefiltered_chunks_route_to_trimmed_without_classifier(book_epub: Path)
 
 
 def test_classifier_stub_never_invoked_for_article_front_back_matter(article_epub: Path) -> None:
-    """Same guarantee for the single-spine-item organization."""
+    """Same guarantee for the single-spine-item organization.
+
+    #71 review, finding D: the previous version asserted
+    ``calls == len(to_classify)``, which is trivially true for ANY input —
+    classify_chunks calls its llm once per element, so leaking flagged chunks
+    into to_classify kept the test green. This version observes the forbidden
+    boundary directly: it records every dispatched prompt and asserts no
+    flagged chunk's text appears in any of them, exactly like the book test.
+    """
     chunks = extract(article_epub)
     to_classify, prefiltered = split_prefiltered(chunks)
     assert prefiltered, "article fixture must produce structural chunks"
     assert all(overflow_bucket(ov.reason, ov.bucket) == "trimmed" for ov in prefiltered)
 
-    calls = 0
+    dispatched: list[str] = []
 
-    def counting_llm(_prompt: str) -> str:
-        nonlocal calls
-        calls += 1
+    def spy_llm(prompt: str) -> str:
+        dispatched.append(prompt)
         return '{"choice": "overflow", "reason": "stub", "bucket": "qa"}'
 
     shapes = load_shapes(REPO_ROOT / "config" / "shapes.yaml")
-    classify_chunks(to_classify, shapes, llm=counting_llm, max_workers=1)
-    assert calls == len(to_classify)  # classifier only ever saw the body paragraphs
+    classify_chunks(to_classify, shapes, llm=spy_llm, max_workers=1)
+    # Identity, not count: no flagged chunk text was dispatched to the LLM,
+    # and every dispatched chunk is an unflagged body paragraph.
+    flagged = [c for c in chunks if PREFILTER_METADATA_KEY in c.metadata]
+    assert flagged, "article fixture must produce structural chunks"
+    for chunk in flagged:
+        assert all(chunk.text not in prompt for prompt in dispatched)
+    assert {c.text for c in to_classify}.isdisjoint(c.text for c in flagged)
+    assert len(dispatched) == len(to_classify)
 
 
 def test_body_chunks_produce_candidates(book_epub: Path) -> None:
@@ -571,3 +585,179 @@ def test_short_structural_content_routed_through_s3(tmp_path: Path) -> None:
     assert overflow_bucket(prefiltered[0].reason, prefiltered[0].bucket) == "trimmed"
     # zero dispatch for the structural chunk; the body paragraph is all the classifier sees
     assert [c.text for c in to_classify] == ["Ordinary body content living in the chapter spine item."]
+
+
+# ---- #71 review round 2 regressions ----
+
+
+def test_dpub_role_token_list_still_prefilters(tmp_path: Path) -> None:
+    """Finding A: role is a space-separated token list. A recognized doc-* role
+    must prefilter even when accompanied by additional roles — the parser used
+    to do one exact lookup of the whole attribute value, so
+    role="doc-bibliography region" fell through to the classifier."""
+    p = _write_epub(tmp_path / "roles.epub", {
+        "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+        "content.opf": _opf(
+            "Role Tokens",
+            [("body", "body.xhtml", "application/xhtml+xml", "")],
+            ["body"],
+        ),
+        "body.xhtml": _xhtml(
+            '<section role="doc-bibliography region"><h2>Works</h2>'
+            f"<p>{_pad('Smith J. (2021). A citation inside a multi-role bibliography section.')}</p>"
+            "</section>"
+            "<section>"
+            f"<p>{_pad('A substantive body paragraph outside the bibliography section.')}</p>"
+            "</section>"
+        ),
+    })
+    chunks = extract(p)
+    citation = _find(chunks, "Smith J.")
+    assert citation.metadata[PREFILTER_METADATA_KEY] == "bibliography"
+    assert PREFILTER_METADATA_KEY not in _find(chunks, "A substantive body paragraph").metadata
+
+
+def test_unknown_spine_idref_fails_loudly(tmp_path: Path) -> None:
+    """Finding B: a spine itemref whose idref resolves to no manifest item must
+    abort extraction naming the bad idref, not be silently dropped."""
+    items = [
+        ("one", "one.xhtml", "application/xhtml+xml", ""),
+        ("two", "two.xhtml", "application/xhtml+xml", ""),
+    ]
+    p = _write_epub(tmp_path / "ghost.epub", {
+        "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+        "content.opf": _opf("Ghost", items, ["one", "ghost", "two"]),
+        "one.xhtml": _xhtml(
+            f"<p>{_pad('First body paragraph of a book with a broken spine reference.')}</p>"
+        ),
+        "two.xhtml": _xhtml(
+            f"<p>{_pad('Second body paragraph of a book with a broken spine reference.')}</p>"
+        ),
+    })
+    with pytest.raises(ExtractionError, match="unknown manifest id 'ghost'"):
+        extract(p)
+
+
+def test_missing_spine_member_fails_loudly(tmp_path: Path) -> None:
+    """Finding B: a declared XHTML spine member absent from the ZIP must abort
+    extraction naming the href, not be silently skipped (which produced a
+    partial book with no warning)."""
+    items = [
+        ("one", "one.xhtml", "application/xhtml+xml", ""),
+        ("gone", "missing.xhtml", "application/xhtml+xml", ""),
+        ("two", "two.xhtml", "application/xhtml+xml", ""),
+    ]
+    p = _write_epub(tmp_path / "partial.epub", {
+        "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+        "content.opf": _opf("Partial", items, ["one", "gone", "two"]),
+        "one.xhtml": _xhtml(
+            f"<p>{_pad('First body paragraph of a book missing a spine member.')}</p>"
+        ),
+        # missing.xhtml deliberately absent from the archive
+        "two.xhtml": _xhtml(
+            f"<p>{_pad('Second body paragraph of a book missing a spine member.')}</p>"
+        ),
+    })
+    with pytest.raises(ExtractionError, match="missing.xhtml.*absent from the archive"):
+        extract(p)
+
+
+def _write_epub_deflated(path: Path, files: dict[str, str]) -> Path:
+    """Like _write_epub but DEFLATE-compresses members — needed to exercise the
+    compression-ratio guard (the default stored fixtures all sit at ratio 1)."""
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        for name, content in files.items():
+            z.writestr(name, content, compress_type=zipfile.ZIP_DEFLATED)
+    return path
+
+
+def test_large_member_ratio_over_10x_rejected(tmp_path: Path) -> None:
+    """Finding C: a spine member >5 MB uncompressed may compress at most 10x.
+    This ~6.6 MB member deflates ~1000:1 — a zip-bomb shape — and must be
+    rejected before decompression, with the error naming the member."""
+    body = f"<p>{_pad('A body paragraph of a hostile archive member.')}</p>" * 110_000
+    p = _write_epub_deflated(tmp_path / "bomb.epub", {
+        "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+        "content.opf": _opf(
+            "Bomb",
+            [("ch", "chapter.xhtml", "application/xhtml+xml", "")],
+            ["ch"],
+        ),
+        "chapter.xhtml": _xhtml(body),
+    })
+    with zipfile.ZipFile(p) as zf:
+        info = zf.getinfo("chapter.xhtml")
+        assert info.file_size > 5 * 1024 * 1024  # premise: large-member rule applies
+        assert info.file_size / info.compress_size > 10
+    with pytest.raises(ExtractionError, match="chapter.xhtml.*decompression budget"):
+        extract(p)
+
+
+def test_small_member_ratio_over_20x_rejected(tmp_path: Path) -> None:
+    """Finding C: a member at or under 5 MB uncompressed may compress at most
+    20x. A ~150 KB run of one repeated character deflates ~1000:1 and trips the
+    small-member limit."""
+    body = f"<p>{'a' * 150_000}</p>"
+    p = _write_epub_deflated(tmp_path / "smallbomb.epub", {
+        "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+        "content.opf": _opf(
+            "Small Bomb",
+            [("ch", "chapter.xhtml", "application/xhtml+xml", "")],
+            ["ch"],
+        ),
+        "chapter.xhtml": _xhtml(body),
+    })
+    with zipfile.ZipFile(p) as zf:
+        info = zf.getinfo("chapter.xhtml")
+        assert info.file_size <= 5 * 1024 * 1024  # premise: small-member rule applies
+        assert info.file_size / info.compress_size > 20
+    with pytest.raises(ExtractionError, match="chapter.xhtml.*decompression budget"):
+        extract(p)
+
+
+def test_bomb_guard_covers_container_and_opf_reads(tmp_path: Path) -> None:
+    """Finding C: the guard is on all three read sites, not just the spine loop.
+    A bomb-shaped container.xml must be rejected before the OPF is even located."""
+    padded_container = _CONTAINER.format(opf_path="content.opf").replace(
+        "</container>", "<!--" + " " * 200_000 + "--></container>"
+    )
+    p = _write_epub_deflated(tmp_path / "cbomb.epub", {
+        "META-INF/container.xml": padded_container,
+        "content.opf": _opf(
+            "Container Bomb",
+            [("ch", "chapter.xhtml", "application/xhtml+xml", "")],
+            ["ch"],
+        ),
+        "chapter.xhtml": _xhtml(
+            f"<p>{_pad('A body paragraph that must never be reached.')}</p>"
+        ),
+    })
+    with zipfile.ZipFile(p) as zf:
+        info = zf.getinfo("META-INF/container.xml")
+        assert info.file_size / info.compress_size > 20
+    with pytest.raises(ExtractionError, match="META-INF/container.xml.*decompression budget"):
+        extract(p)
+
+
+def test_stored_large_member_passes_guard(tmp_path: Path) -> None:
+    """Finding C calibration: the budget gates compression RATIO, not size.
+    A >5 MB member stored uncompressed (ratio 1) is a big book, not a bomb,
+    and must extract normally."""
+    paragraph = _pad("A real body paragraph of a large but honestly stored book.")
+    body = f"<p>{paragraph}</p>" * 90_000  # ~6.7 MB uncompressed
+    p = _write_epub(tmp_path / "bigstored.epub", {  # stored, not deflated
+        "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
+        "content.opf": _opf(
+            "Big Stored",
+            [("ch", "chapter.xhtml", "application/xhtml+xml", "")],
+            ["ch"],
+        ),
+        "chapter.xhtml": _xhtml(body),
+    })
+    with zipfile.ZipFile(p) as zf:
+        info = zf.getinfo("chapter.xhtml")
+        assert info.file_size > 5 * 1024 * 1024
+        assert info.compress_size == info.file_size  # stored: ratio 1
+    chunks = extract(p)
+    assert chunks and all(c.text == paragraph for c in chunks)

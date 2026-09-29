@@ -60,6 +60,50 @@ MIN_CHUNK_CHARS = 30
 
 _XHTML_MEDIA_TYPE = "application/xhtml+xml"
 
+# Decompression-bomb guard (#71 review, finding C). Every member this extractor
+# reads — container.xml, the OPF, each XHTML spine item — is checked against a
+# compression-ratio budget computed from central-directory metadata
+# (ZipInfo.file_size / ZipInfo.compress_size) BEFORE any read(), so a hostile
+# archive is rejected before a single byte is decompressed. Limits: a member
+# whose uncompressed size is 5 MB or less may compress at most 20x; larger
+# members at most 10x. Measured across the four real sample epubs (counting
+# only members this extractor reads) the worst ratio is 6.8x and the largest
+# member 468 KB, so these bounds reject bombs with two orders of magnitude of
+# headroom over real books.
+_SMALL_MEMBER_MAX_BYTES = 5 * 1024 * 1024
+_MAX_RATIO_SMALL_MEMBER = 20.0
+_MAX_RATIO_LARGE_MEMBER = 10.0
+
+
+def _check_member_ratio(zf: zipfile.ZipFile, name: str) -> None:
+    """Reject a zip member whose compression ratio exceeds the budget.
+
+    Pure metadata check — both sizes come from the central directory, so this
+    costs nothing and must run before the member is read.
+    """
+    info = zf.getinfo(name)
+    if info.file_size == 0 or info.compress_size == 0:
+        return  # empty or stored-empty member: no expansion possible
+    ratio = info.file_size / info.compress_size
+    limit = (
+        _MAX_RATIO_SMALL_MEMBER
+        if info.file_size <= _SMALL_MEMBER_MAX_BYTES
+        else _MAX_RATIO_LARGE_MEMBER
+    )
+    if ratio > limit:
+        raise ExtractionError(
+            f"EPUB member {name!r} exceeds the decompression budget: "
+            f"{info.file_size} bytes uncompressed from {info.compress_size} "
+            f"compressed ({ratio:.1f}x > {limit:.0f}x limit) — refusing to read "
+            f"a probable zip bomb"
+        )
+
+
+def _read_member(zf: zipfile.ZipFile, name: str) -> bytes:
+    """zf.read(name) with the decompression-budget guard applied first."""
+    _check_member_ratio(zf, name)
+    return zf.read(name)
+
 # epub:type vocabulary (EPUB 3 semantics / z3998 / DPUB) that marks a section or
 # whole item as structural chaff. Deliberately narrow: the generic
 # "frontmatter"/"backmatter" classes are NOT here — a translator's introduction
@@ -190,7 +234,7 @@ def _section_title_kind(section_title: str) -> str | None:
 def _find_opf_path(zf: zipfile.ZipFile) -> str:
     """Locate the OPF package document via META-INF/container.xml."""
     try:
-        container = zf.read("META-INF/container.xml")
+        container = _read_member(zf, "META-INF/container.xml")
     except KeyError as e:
         raise ExtractionError("not an EPUB: META-INF/container.xml missing") from e
     try:
@@ -213,7 +257,7 @@ def _parse_opf(
     here, which is how the EPUB 2 NCX is 'routed out': it is never read.
     """
     try:
-        opf = zf.read(opf_path)
+        opf = _read_member(zf, opf_path)
     except KeyError as e:
         raise ExtractionError(f"OPF package document missing from archive: {opf_path}") from e
     try:
@@ -246,7 +290,12 @@ def _parse_opf(
     for idref in idrefs:
         entry = manifest.get(idref)
         if entry is None:
-            continue
+            # Fail loudly: silently dropping an unresolvable spine reference
+            # produces a partial book with no operator-visible signal (#71
+            # review, finding B).
+            raise ExtractionError(
+                f"OPF {opf_path} spine references unknown manifest id {idref!r}"
+            )
         href, media_type, properties = entry
         if media_type != _XHTML_MEDIA_TYPE:
             continue
@@ -301,14 +350,18 @@ class _XHTMLSectionParser(_ParagraphAndAnchorParser):
     # -- emit hook: base class calls this for <p> closes; we use it for all --
 
     def _current_type_kind(self) -> str | None:
-        for tokens, role in reversed(self._section_stack):
+        for tokens, role_tokens in reversed(self._section_stack):
             for token in tokens:
                 kind = _STRUCTURAL_EPUB_TYPES.get(token)
                 if kind:
                     return kind
-            kind = _STRUCTURAL_DOC_ROLES.get(role)
-            if kind:
-                return kind
+            # DPUB role is a space-separated token list (e.g.
+            # 'doc-bibliography region'): every token is considered, not just
+            # the whole attribute value (#71 review, finding A).
+            for token in role_tokens:
+                kind = _STRUCTURAL_DOC_ROLES.get(token)
+                if kind:
+                    return kind
         return None
 
     def _emit(self, text: str) -> None:
@@ -328,7 +381,8 @@ class _XHTMLSectionParser(_ParagraphAndAnchorParser):
         if tag == "section":
             attr = dict(attrs)
             tokens = frozenset((attr.get("epub:type") or "").split())
-            self._section_stack.append((tokens, attr.get("role") or ""))
+            role_tokens = frozenset((attr.get("role") or "").split())
+            self._section_stack.append((tokens, role_tokens))
             self._saved_section_titles.append(self._current_section_title)
             if attr.get("id"):
                 self._current_anchor = attr["id"]
@@ -404,13 +458,21 @@ def extract(path: Path | str) -> list[Chunk]:
         title, spine_items = _parse_opf(zf, opf_path)
         source_label = title or p.name
 
+        # Fail loudly on declared-but-absent XHTML members rather than silently
+        # producing a partial book (#71 review, finding B). Validated for the
+        # whole spine before any content is parsed.
+        names = set(zf.namelist())
+        for href, _properties in spine_items:
+            if href not in names:
+                raise ExtractionError(
+                    f"OPF {opf_path} spine declares {href}, "
+                    "but that XHTML member is absent from the archive"
+                )
+
         chunks: list[Chunk] = []
         for href, properties in spine_items:
             item_kind = _item_kind(href, properties)
-            try:
-                data = zf.read(href)
-            except KeyError:
-                continue  # malformed epub: spine item absent from the archive
+            data = _read_member(zf, href)
             parser = _XHTMLSectionParser()
             parser.feed(data.decode("utf-8", errors="replace"))
             parser.close()
