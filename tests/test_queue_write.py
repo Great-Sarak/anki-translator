@@ -481,48 +481,44 @@ def test_strong_chaff_downgrades_llm_qa_mislabel_to_trimmed() -> None:
     assert decision.disagreement == "qa_with_chaff"
 
 
-def test_strong_chaff_downgrades_index_reason_to_trimmed() -> None:
-    """#71 review round 4: an untyped book index now reaches the classifier, so
-    an index-flavoured overflow reason mislabeled `qa` by the LLM must be
-    downgraded to `trimmed` by the strong-chaff backstop — exactly as
-    `bibliograph` already is. The signal names the artifact unambiguously
-    ('book index', 'index listing'), never the bare word 'index'."""
+def test_no_index_phrasing_overrides_an_explicit_qa_judgment() -> None:
+    """#71 review rounds 5-6: no index phrase belongs in _STRONG_CHAFF_SIGNALS,
+    which exists only to override an explicit `qa`. Apply that list's admission
+    test — could a passage *about* this phrase carry a learnable fact? — and
+    every index phrase fails it, the artifact-sounding ones included: a passage
+    can teach how a book index maps concepts to locators, how a book-index
+    differs from a concordance, or how an index listing groups subentries.
+
+    Bites: returning any of the five phrases to _STRONG_CHAFF_SIGNALS fails this."""
     for reason in (
-        "passage is a book index",
-        "no substantive content — a book-index of terms and page numbers",
-        "passage is an index listing with page numbers",
-    ):
-        decision = classify_overflow_bucket(reason, "qa")
-        assert decision.bucket == "trimmed", reason
-        assert decision.downgraded is True, reason
-        assert decision.disagreement == "qa_with_chaff", reason
-
-
-def test_index_entry_phrasing_never_overrides_an_explicit_qa_judgment() -> None:
-    """#71 review round 5: 'index entry'/'index entries' are ordinary subject
-    matter in databases and search — a classifier can read a substantive passage,
-    correctly return `qa`, and phrase its reason using them. They stay in
-    _CHAFF_SIGNALS (usable when the LLM offered no bucket at all) but must never
-    reach _STRONG_CHAFF_SIGNALS, which exists only to override an explicit `qa`.
-
-    Bites: putting either phrase back into _STRONG_CHAFF_SIGNALS fails this."""
-    for reason in (
+        # 'index entry' / 'index entries' — round 5
         "multiple distinct facts about index entries do not fit one card",
         "passage explains what a B-tree index entry stores",
+        # 'book index' / 'book-index' / 'index listing' — round 6
+        "passage explains how a book index maps concepts to page locators",
+        "passage compares a book-index with a concordance",
+        "passage explains why an index listing groups subentries under a heading",
     ):
         decision = classify_overflow_bucket(reason, "qa")
         assert decision.bucket == "qa", reason
         assert decision.downgraded is False, reason
         assert decision.disagreement is None, reason
 
-    # Still usable as a fallback when the LLM self-tagged nothing — there is no
-    # explicit judgment to override in that case. The phrasing carries no other
-    # chaff signal, so `index entries` is what does the work here: strip it and
-    # the same reason routes to qa.
-    fallback = classify_overflow_bucket("terms with page numbers, index entries only", None)
-    assert fallback.bucket == "trimmed"
-    assert fallback.downgraded is False
-    assert classify_overflow_bucket("terms with page numbers, only", None).bucket == "qa"
+
+def test_index_phrasing_still_buckets_a_judgment_free_overflow() -> None:
+    """The phrases stay in _CHAFF_SIGNALS, so they still route a bucketless
+    overflow to trimmed — there is no explicit judgment to override in that case.
+    Each reason carries no other chaff signal, so the index phrase is what does
+    the work: strip it and the same reason routes to qa."""
+    for reason, stripped in (
+        ("terms with page numbers, index entries only", "terms with page numbers, only"),
+        ("a book index of terms and locators", "a of terms and locators"),
+        ("an index listing of terms", "an of terms"),
+    ):
+        decision = classify_overflow_bucket(reason, None)
+        assert decision.bucket == "trimmed", reason
+        assert decision.downgraded is False, reason
+        assert classify_overflow_bucket(stripped, None).bucket == "qa", stripped
 
 
 def test_every_strong_chaff_signal_matches_a_general_chaff_signal() -> None:

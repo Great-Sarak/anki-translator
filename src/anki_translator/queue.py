@@ -114,10 +114,12 @@ _CHAFF_SIGNALS = (
     # index now reaches the classifier, so its overflow phrasings must route
     # to trimmed). Phrased to name the artifact, never the bare word "index" —
     # "refractive index" / "h-index" are substantive content.
-    # Note "index entry"/"index entries" are in THIS list only, never in
-    # _STRONG_CHAFF_SIGNALS: they are ordinary subject matter in databases and
-    # search, so they may act as a fallback when the LLM offered no bucket, but
-    # must never override an explicit `qa` judgment (#71 review round 5).
+    # Note every index phrase is in THIS list only, never in
+    # _STRONG_CHAFF_SIGNALS. Each of them can head a passage that *teaches*
+    # something — how an index maps concepts to locators, how a book-index
+    # differs from a concordance, what a B-tree index entry stores — so they may
+    # act as a fallback when the LLM offered no bucket at all, but must never
+    # override an explicit `qa` judgment (#71 review rounds 5-6).
     "book index",
     "book-index",
     "index entry",
@@ -180,9 +182,6 @@ _CHAFF_SIGNALS = (
 # rather than members of that tuple.
 _STRONG_CHAFF_SIGNALS = (
     "bibliograph",
-    "book index",
-    "book-index",
-    "index listing",
     "table of contents",
     "section header",
     "section heading",
