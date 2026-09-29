@@ -110,16 +110,8 @@ _CHAFF_SIGNALS = (
     "header block",  # "passage is a header block with affiliations and metadata"
     "list of topic headings",
     "minireview title",
-    # book index — term + page-number listings (#71 review round 4: an untyped
-    # index now reaches the classifier, so its overflow phrasings must route
-    # to trimmed). Phrased to name the artifact, never the bare word "index" —
-    # "refractive index" / "h-index" are substantive content.
-    # Note every index phrase is in THIS list only, never in
-    # _STRONG_CHAFF_SIGNALS. Each of them can head a passage that *teaches*
-    # something — how an index maps concepts to locators, how a book-index
-    # differs from a concordance, what a B-tree index entry stores — so they may
-    # act as a fallback when the LLM offered no bucket at all, but must never
-    # override an explicit `qa` judgment (#71 review rounds 5-6).
+    # book index — term + page-number listings. Never the bare word "index":
+    # "refractive index" and "h-index" are substantive content.
     "book index",
     "book-index",
     "index entry",
@@ -163,23 +155,13 @@ _CHAFF_SIGNALS = (
 )
 
 
-# High-precision structural-chaff markers (#66): phrasings that are essentially
-# *never* real subject-matter content. Because they're high-precision, they're
-# safe to use as a conservative backstop that can override an LLM `qa` mislabel —
-# unlike the fuzzier full list, which we no longer trust to override an explicit
-# content judgment.
+# High-precision structural-chaff markers (#66). This list is the only thing that
+# may override an explicit LLM `qa` judgment, so membership has one test: could a
+# passage *about* this phrase carry a learnable fact? If yes, it belongs in
+# _CHAFF_SIGNALS alone, however chaff-like it reads.
 #
-# Membership test, and the only one: could a passage *about* this phrase carry a
-# learnable fact? If yes the phrase does not belong here, however chaff-like it
-# looks in practice. "index entry" reads as structural but is ordinary subject
-# matter in databases and search, so it stays in _CHAFF_SIGNALS alone
-# (#71 review round 5).
-#
-# Every entry must also match somewhere in _CHAFF_SIGNALS, so that a downgrade
-# here never logs as `trimmed_without_chaff` drift. That relationship is by
-# substring, not by set membership: `bibliograph`, `affiliations`,
-# `acknowledgment` and `acknowledgement` are stems of longer general entries
-# rather than members of that tuple.
+# Every entry must also match somewhere in _CHAFF_SIGNALS — by substring, not set
+# membership — or its own downgrade logs as `trimmed_without_chaff` drift.
 _STRONG_CHAFF_SIGNALS = (
     "bibliograph",
     "table of contents",
