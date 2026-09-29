@@ -173,10 +173,14 @@ class _ParagraphAndAnchorParser(HTMLParser):
             self._in_heading = False
             self._heading_buffer = []
         elif tag == "p" and self._in_paragraph:
-            text = "".join(self._paragraph_buffer)
-            self.paragraphs.append((text, self._current_anchor, self._current_section_title))
+            self._emit("".join(self._paragraph_buffer))
             self._in_paragraph = False
             self._paragraph_buffer = []
+
+    def _emit(self, text: str) -> None:
+        """Record one extracted paragraph. Hook point: the EPUB extractor's
+        subclass overrides this to attach section-level structural metadata."""
+        self.paragraphs.append((text, self._current_anchor, self._current_section_title))
 
     def handle_data(self, data: str) -> None:
         if self._skip_depth > 0:

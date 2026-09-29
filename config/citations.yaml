@@ -30,6 +30,13 @@ pdf:
   source_required: ["filename"]
   position_required: ["page"]
 
+epub:
+  description: "EPUB ebook or article (zip of XHTML); source is the OPF title, filename fallback"
+  source_template: "{title}"
+  position_template: "{spine_item}{anchor}"
+  source_required: ["title"]
+  position_required: ["spine_item"]   # anchor optional; falls back to bare spine item
+
 book:
   description: "Book reference (title + edition disambiguates pagination)"
   source_template: "{title}, {edition}"

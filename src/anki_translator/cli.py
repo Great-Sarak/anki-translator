@@ -17,6 +17,7 @@ from . import bootstrap as bootstrap_mod
 from . import classifier, tagger
 from .config import load_citations, load_shapes, load_tagger_config
 from .extractors import ExtractionError
+from .extractors.epub import extract as epub_extract
 from .extractors.manual import extract_file as manual_extract_file
 from .extractors.manual import extract_text as manual_extract_text
 from .extractors.pdf import extract as pdf_extract
@@ -72,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     p_boot.add_argument("--dry-run", action="store_true")
 
     p_ing = sub.add_parser("ingest", help="Extract a source → write the queue + qa files")
-    p_ing.add_argument("source", nargs="?", help="URL, .pdf path, or .txt/.md path (exactly one of source or --text must be given)")
+    p_ing.add_argument("source", nargs="?", help="URL, .pdf/.epub path, or .txt/.md path (exactly one of source or --text must be given)")
     p_ing.add_argument("--text", help="Inline text payload (alternative to a source path/URL)")
     p_ing.add_argument("--deck", required=True, help="Anki deck name (e.g. 'Reading')")
     p_ing.add_argument("--tag", help="Batch tag applied to every produced note (e.g. 'book-club-2026')")
@@ -221,6 +222,8 @@ def _dispatch_extractor(args: argparse.Namespace) -> list:
     p = Path(src)
     if p.suffix.lower() == ".pdf":
         return pdf_extract(p)
+    if p.suffix.lower() == ".epub":
+        return epub_extract(p)
     if p.suffix.lower() in {".txt", ".md"}:
         return manual_extract_file(p, label=args.label)
     raise ExtractionError(f"cannot determine source type for {src!r}")
