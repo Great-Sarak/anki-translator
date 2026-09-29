@@ -178,7 +178,9 @@ def _href_stem_kind(href: str) -> str | None:
     deliberately does NOT match the bare stem "index" — in journal-article
     epubs the article body itself is xhtml/index.xhtml, so name-based index
     filtering would gut the content. Book indexes are caught by epub:type /
-    heading-text signals instead.
+    role signals; an index carrying neither reaches the classifier (#71 review
+    round 4 — title-text matching cannot separate "Author Index" from
+    "Refractive Index", so the extractor no longer guesses from headings).
     """
     stem = href.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
     joined = re.sub(r"[^a-z0-9]", "", stem)
@@ -208,7 +210,7 @@ def _href_stem_kind(href: str) -> str | None:
 # EPUB-only heading map (#71): the issue's named structural kinds that url.py's
 # _boilerplate_kind does not cover — the URL vocabulary is article/wiki-shaped
 # (references, cited-by, see-also), while books name their front/back matter
-# Title Page, Copyright, Dedication, Preface, Colophon, Index. Substring match
+# Title Page, Copyright, Dedication, Preface, Colophon. Substring match
 # like the URL map, so "Preface to the Second Edition" still flags. Kinds reuse
 # the _STRUCTURAL_EPUB_TYPES vocabulary so trimmed entries read consistently
 # however the publisher signalled the matter.
@@ -221,34 +223,11 @@ _EPUB_HEADING_KINDS: tuple[tuple[str, str], ...] = (
     ("colophon", "colophon"),
 )
 
-# Book-index heading fallback. A word-boundary search for "index" is not
-# enough (#71 review round 3, finding 2): it flagged any heading *containing*
-# the standalone word, so substantive body sections like "Refractive Index in
-# Optical Materials" or "H-index as a measure of research impact" were routed
-# to trimmed with zero classifier dispatch — the inverse of the acceptance
-# criterion. Real book indexes title themselves from a bounded vocabulary, so
-# match the WHOLE normalized heading instead: "index", "<qualifier> index"
-# (general/subject/author/name/…, at most two qualifier words), or "index of
-# <names>". A heading that merely mentions an index falls through to the
-# classifier — the safe direction, since under-matching costs classifier
-# tokens while over-matching silently deletes body content.
-_BOOK_INDEX_HEADING_RE = re.compile(
-    r"(?:index(?: of [a-z]{1,20}(?: [a-z]{1,20}){0,2})?"
-    r"|[a-z]{1,20}(?: [a-z]{1,20})? index)"
-)
-
-
-def _is_book_index_heading(section_title: str) -> bool:
-    """Whole-heading book-index title match (see _BOOK_INDEX_HEADING_RE)."""
-    t = re.sub(r"\s+", " ", section_title).strip().rstrip(".:")
-    return bool(_BOOK_INDEX_HEADING_RE.fullmatch(t))
-
-
 def _section_title_kind(section_title: str) -> str | None:
     """EPUB-aware extension of url.py's _boilerplate_kind.
 
     Adds the EPUB structural headings the URL map does not cover — title page,
-    copyright, dedication, preface, colophon, index, about-the-author — then
+    copyright, dedication, preface, colophon, about-the-author — then
     defers to the shared url.py vocabulary, which is the seam that makes
     section-level structural matter reachable inside single-spine-item article
     epubs. Heading state is scoped to the enclosing <section> (see
@@ -267,8 +246,6 @@ def _section_title_kind(section_title: str) -> str | None:
     for phrase, kind in _EPUB_HEADING_KINDS:
         if phrase in t:
             return kind
-    if _is_book_index_heading(t):
-        return "index"
     return _boilerplate_kind(t)
 
 

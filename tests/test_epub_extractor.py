@@ -509,9 +509,13 @@ def test_heading_state_scoped_to_its_section(tmp_path: Path) -> None:
     )
 
 
-def test_structural_headings_recognized_without_epub_type(tmp_path: Path) -> None:
-    """Finding 2(a): index.xhtml carrying <h1>Index</h1> but no epub:type — the bare
-    'index' stem is (correctly) not a filename signal, so the heading must catch it."""
+def test_untyped_index_heading_reaches_classifier(tmp_path: Path) -> None:
+    """#71 review round 4: index.xhtml carrying <h1>Index</h1> but no epub:type —
+    the bare 'index' stem is (correctly) not a filename signal, and the free-text
+    heading match was retired (it could not separate 'Author Index' from
+    'Refractive Index'). An untyped index therefore leaves the S3 path and
+    reaches the classifier — that is the intended consequence of the decision:
+    it costs tokens, it never deletes body."""
     p = _write_epub(tmp_path / "bookindex.epub", {
         "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
         "content.opf": _opf(
@@ -530,8 +534,12 @@ def test_structural_headings_recognized_without_epub_type(tmp_path: Path) -> Non
         ),
     })
     chunks = extract(p)
-    assert _find(chunks, "Alpha, 12, 45").metadata[PREFILTER_METADATA_KEY] == "index"
+    assert PREFILTER_METADATA_KEY not in _find(chunks, "Alpha, 12, 45").metadata
     assert PREFILTER_METADATA_KEY not in _find(chunks, "Ordinary body content").metadata
+    # both chunks dispatch: the untyped index no longer prefilters
+    to_classify, prefiltered = split_prefiltered(chunks)
+    assert len(to_classify) == 2
+    assert prefiltered == []
 
 
 def test_generic_backmatter_class_with_structural_heading(tmp_path: Path) -> None:
@@ -820,11 +828,12 @@ def test_utf16_spine_item_decoded_like_utf8(tmp_path: Path) -> None:
 
 
 def test_substantive_heading_containing_index_not_prefiltered(tmp_path: Path) -> None:
-    """Finding 2: a body heading that merely CONTAINS the standalone word
-    'index' is not a book index — its paragraphs must stay in to_classify with
-    classifier dispatch intact. The whole-title fallback must still catch real
-    book-index titles ('General Index' here; bare 'Index' is covered by
-    test_structural_headings_recognized_without_epub_type)."""
+    """#71 review round 4 regression: the short substantive titles the retired
+    whole-heading regex caught verbatim — 'Refractive Index' and 'H Index' —
+    keep their paragraphs unflagged and in to_classify. An untyped real-index
+    title ('General Index') now ALSO dispatches: title text cannot separate the
+    two cases, so the extractor no longer tries — the classifier trims it.
+    The typed path is unchanged: epub:type="index" still prefilters."""
     p = _write_epub(tmp_path / "indexmention.epub", {
         "META-INF/container.xml": _CONTAINER.format(opf_path="content.opf"),
         "content.opf": _opf(
@@ -833,28 +842,37 @@ def test_substantive_heading_containing_index_not_prefiltered(tmp_path: Path) ->
             ["body"],
         ),
         "body.xhtml": _xhtml(
-            "<section><h2>Refractive Index in Optical Materials</h2>"
+            "<section><h2>Refractive Index</h2>"
             f"<p>{_pad('Refractive index varies with wavelength and temperature in glasses.')}</p>"
             "</section>"
-            "<section><h2>H-index as a measure of research impact</h2>"
+            "<section><h2>H Index</h2>"
             f"<p>{_pad('The h-index combines productivity with citation impact per author.')}</p>"
             "</section>"
             "<section><h2>General Index</h2>"
             f"<p>{_pad('Alpha, 12, 45. Beta, 33. Gamma, 78. A book-index entry paragraph.')}</p>"
+            "</section>"
+            '<section epub:type="index"><h1>Index</h1>'
+            f"<p>{_pad('Delta, 5, 9. Epsilon, 21. A typed book-index entry paragraph.')}</p>"
             "</section>"
         ),
     })
     chunks = extract(p)
     refractive = _find(chunks, "Refractive index varies")
     h_index = _find(chunks, "The h-index combines")
-    book_index = _find(chunks, "Alpha, 12, 45")
+    untyped_index = _find(chunks, "Alpha, 12, 45")
+    typed_index = _find(chunks, "Delta, 5, 9")
     assert PREFILTER_METADATA_KEY not in refractive.metadata
     assert PREFILTER_METADATA_KEY not in h_index.metadata
-    assert book_index.metadata[PREFILTER_METADATA_KEY] == "index"
+    # the untyped index now dispatches instead of being trimmed by the extractor
+    assert PREFILTER_METADATA_KEY not in untyped_index.metadata
+    # the typed path is unchanged
+    assert typed_index.metadata[PREFILTER_METADATA_KEY] == "index"
 
-    # the inverse-of-acceptance check: both substantive sections dispatch,
-    # only the real book index is prefiltered, and it lands in trimmed via S3
+    # body and the untyped index all dispatch; only the typed index is
+    # prefiltered, and it lands in trimmed via S3 with zero classifier dispatch
     to_classify, prefiltered = split_prefiltered(chunks)
-    assert {c.text for c in to_classify} == {refractive.text, h_index.text}
-    assert len(prefiltered) == 1
+    assert {c.text for c in to_classify} == {
+        refractive.text, h_index.text, untyped_index.text
+    }
+    assert [ov.chunk.text for ov in prefiltered] == [typed_index.text]
     assert overflow_bucket(prefiltered[0].reason, prefiltered[0].bucket) == "trimmed"

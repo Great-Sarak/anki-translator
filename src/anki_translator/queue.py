@@ -110,6 +110,15 @@ _CHAFF_SIGNALS = (
     "header block",  # "passage is a header block with affiliations and metadata"
     "list of topic headings",
     "minireview title",
+    # book index — term + page-number listings (#71 review round 4: an untyped
+    # index now reaches the classifier, so its overflow phrasings must route
+    # to trimmed). Phrased to name the artifact, never the bare word "index" —
+    # "refractive index" / "h-index" are substantive content.
+    "book index",
+    "book-index",
+    "index entry",
+    "index entries",
+    "index listing",
     # author / affiliations / acknowledgments
     "author names",
     "author names and affiliations",
@@ -155,6 +164,11 @@ _CHAFF_SIGNALS = (
 # which we no longer trust to override an explicit content judgment.
 _STRONG_CHAFF_SIGNALS = (
     "bibliograph",
+    "book index",
+    "book-index",
+    "index entry",
+    "index entries",
+    "index listing",
     "table of contents",
     "section header",
     "section heading",

@@ -481,6 +481,36 @@ def test_strong_chaff_downgrades_llm_qa_mislabel_to_trimmed() -> None:
     assert decision.disagreement == "qa_with_chaff"
 
 
+def test_strong_chaff_downgrades_index_reason_to_trimmed() -> None:
+    """#71 review round 4: an untyped book index now reaches the classifier, so
+    an index-flavoured overflow reason mislabeled `qa` by the LLM must be
+    downgraded to `trimmed` by the strong-chaff backstop — exactly as
+    `bibliograph` already is. The signal names the artifact ('index entries',
+    'book index'), never the bare word 'index'."""
+    decision = classify_overflow_bucket("no substantive content — index entries", "qa")
+    assert decision.bucket == "trimmed"
+    assert decision.downgraded is True
+    assert decision.disagreement == "qa_with_chaff"
+
+    decision2 = classify_overflow_bucket("passage is a book index", "qa")
+    assert decision2.bucket == "trimmed"
+    assert decision2.downgraded is True
+
+
+def test_bare_index_word_does_not_downgrade_substantive_qa() -> None:
+    """The counterpart guard: 'index' alone is ambiguous — 'refractive index'
+    and 'h-index' are substantive subject matter, and a qa reason mentioning
+    them must NOT trip the backstop. Only artifact-naming phrases signal."""
+    for reason in (
+        "passage explains the refractive index gradient across lens types",
+        "passage discusses the h-index as a citation impact measure",
+        "passage holds multiple distinct facts about the heat index",
+    ):
+        decision = classify_overflow_bucket(reason, "qa")
+        assert decision.bucket == "qa"
+        assert decision.downgraded is False
+
+
 def test_llm_qa_without_strong_chaff_is_left_alone() -> None:
     """The backstop is conservative: a `qa` with no strong chaff signal stays qa,
     no disagreement. A merely-fuzzy _CHAFF_SIGNALS hit does NOT override the LLM."""
