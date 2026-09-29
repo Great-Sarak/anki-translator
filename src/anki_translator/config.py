@@ -9,7 +9,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 Shape = Literal["term-def", "cloze", "term-list", "term-steps", "term-table"]
-SourceType = Literal["url", "doi", "pdf", "book", "manual"]
+SourceType = Literal["url", "doi", "pdf", "book", "manual", "epub"]
 
 
 class ShapeConfig(BaseModel):
@@ -121,7 +121,7 @@ def load_citations(path: Path | str) -> dict[str, CitationConvention]:
     """
     raw = _load_yaml_mapping(path, "citations")
     declared = set(raw.keys())
-    expected: set[str] = {"url", "doi", "pdf", "book", "manual"}
+    expected: set[str] = {"url", "doi", "pdf", "book", "manual", "epub"}
     missing = expected - declared
     if missing:
         raise ConfigError(f"citations config missing required source types: {sorted(missing)}")

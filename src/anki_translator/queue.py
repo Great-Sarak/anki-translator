@@ -110,6 +110,13 @@ _CHAFF_SIGNALS = (
     "header block",  # "passage is a header block with affiliations and metadata"
     "list of topic headings",
     "minireview title",
+    # book index — term + page-number listings. Never the bare word "index":
+    # "refractive index" and "h-index" are substantive content.
+    "book index",
+    "book-index",
+    "index entry",
+    "index entries",
+    "index listing",
     # author / affiliations / acknowledgments
     "author names",
     "author names and affiliations",
@@ -148,11 +155,13 @@ _CHAFF_SIGNALS = (
 )
 
 
-# High-precision structural-chaff markers (#66). A strict subset of
-# _CHAFF_SIGNALS: phrasings that are essentially *never* real subject-matter
-# content. Because they're high-precision, they're safe to use as a conservative
-# backstop that can override an LLM `qa` mislabel — unlike the fuzzier full list,
-# which we no longer trust to override an explicit content judgment.
+# High-precision structural-chaff markers (#66). This list is the only thing that
+# may override an explicit LLM `qa` judgment, so membership has one test: could a
+# passage *about* this phrase carry a learnable fact? If yes, it belongs in
+# _CHAFF_SIGNALS alone, however chaff-like it reads.
+#
+# Every entry must also match somewhere in _CHAFF_SIGNALS — by substring, not set
+# membership — or its own downgrade logs as `trimmed_without_chaff` drift.
 _STRONG_CHAFF_SIGNALS = (
     "bibliograph",
     "table of contents",

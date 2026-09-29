@@ -99,9 +99,9 @@ def test_cutoffs_default_empty(tmp_path: Path) -> None:
 
 
 def test_load_starter_citations() -> None:
-    """The shipped config/citations.yaml loads cleanly and contains all five source types."""
+    """The shipped config/citations.yaml loads cleanly and contains all six source types."""
     citations = load_citations(REPO_ROOT / "config" / "citations.yaml")
-    assert set(citations.keys()) == {"url", "doi", "pdf", "book", "manual"}
+    assert set(citations.keys()) == {"url", "doi", "pdf", "book", "manual", "epub"}
     assert citations["url"].source_template == "{url}"
     assert citations["pdf"].position_template == "page {page}"
     assert citations["manual"].position_template == ""

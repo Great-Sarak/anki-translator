@@ -39,9 +39,29 @@ stable relative measure, not an absolute token bill.
 * **Split unchanged-or-improved** — no layer may move real content (`card`/`qa`)
   into `trimmed`. Compare per-chunk `routing` and the `counts` against the
   golden; `card`/`qa` totals on the clean corpora may hold or rise, never fall.
-* **Tokens ≤ baseline** — `prompt_token_chars` may only drop. Chunks routed
-  without an LLM call (S3 extractor pre-filtering sets `dispatched=False`)
-  contribute zero, so the saving is visible in this number.
+* **Tokens ≤ baseline, with one reviewed exception** — `prompt_token_chars` may
+  only drop *through routing*. Chunks routed without an LLM call (S3 extractor
+  pre-filtering sets `dispatched=False`) contribute zero, so the saving is
+  visible in this number, and no layer may claw it back by dispatching more.
+
+  A deliberate edit to `prompts/classify.txt` is the one thing that may raise it,
+  because the prompt is summed into every dispatched chunk. Such a rise is
+  allowed only when all of the following hold, and the regenerating commit must
+  say so:
+
+  1. The golden diff is confined to `prompt_token_chars` — no `routing`,
+     `counts`, `chunk_count`, `dispatched_count` or drift movement.
+  2. The rise equals *(prompt delta) × (dispatched chunks)* exactly, so it is
+     accounted for rather than merely observed.
+  3. The prompt change buys a stated correctness improvement, and the per-chunk
+     delta is proportionate to it.
+  4. It lands as its own labelled commit, never folded into a behaviour change.
+
+  Note the stub corpora are clean by construction, so a prompt edit that teaches
+  the classifier to *trim* some new kind of chaff shows its cost here and none of
+  its benefit — the benefit appears only on real corpora containing that chaff.
+  That asymmetry is a reason to check the arithmetic, not a reason to wave the
+  rise through.
 
 ## Running
 
