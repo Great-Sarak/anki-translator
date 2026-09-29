@@ -114,6 +114,10 @@ _CHAFF_SIGNALS = (
     # index now reaches the classifier, so its overflow phrasings must route
     # to trimmed). Phrased to name the artifact, never the bare word "index" —
     # "refractive index" / "h-index" are substantive content.
+    # Note "index entry"/"index entries" are in THIS list only, never in
+    # _STRONG_CHAFF_SIGNALS: they are ordinary subject matter in databases and
+    # search, so they may act as a fallback when the LLM offered no bucket, but
+    # must never override an explicit `qa` judgment (#71 review round 5).
     "book index",
     "book-index",
     "index entry",
@@ -157,17 +161,27 @@ _CHAFF_SIGNALS = (
 )
 
 
-# High-precision structural-chaff markers (#66). A strict subset of
-# _CHAFF_SIGNALS: phrasings that are essentially *never* real subject-matter
-# content. Because they're high-precision, they're safe to use as a conservative
-# backstop that can override an LLM `qa` mislabel — unlike the fuzzier full list,
-# which we no longer trust to override an explicit content judgment.
+# High-precision structural-chaff markers (#66): phrasings that are essentially
+# *never* real subject-matter content. Because they're high-precision, they're
+# safe to use as a conservative backstop that can override an LLM `qa` mislabel —
+# unlike the fuzzier full list, which we no longer trust to override an explicit
+# content judgment.
+#
+# Membership test, and the only one: could a passage *about* this phrase carry a
+# learnable fact? If yes the phrase does not belong here, however chaff-like it
+# looks in practice. "index entry" reads as structural but is ordinary subject
+# matter in databases and search, so it stays in _CHAFF_SIGNALS alone
+# (#71 review round 5).
+#
+# Every entry must also match somewhere in _CHAFF_SIGNALS, so that a downgrade
+# here never logs as `trimmed_without_chaff` drift. That relationship is by
+# substring, not by set membership: `bibliograph`, `affiliations`,
+# `acknowledgment` and `acknowledgement` are stems of longer general entries
+# rather than members of that tuple.
 _STRONG_CHAFF_SIGNALS = (
     "bibliograph",
     "book index",
     "book-index",
-    "index entry",
-    "index entries",
     "index listing",
     "table of contents",
     "section header",
